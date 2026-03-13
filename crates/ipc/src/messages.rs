@@ -88,6 +88,81 @@ pub struct Shutdown {
 }
 
 // ---------------------------------------------------------------------------
+// Update loop message types (Phase 2)
+// ---------------------------------------------------------------------------
+
+/// Peripheral → Boot: submit source code for a new version
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SubmitUpdate {
+    pub source_path: String,
+}
+
+/// Boot → Compiler: request compilation of a new version
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CompileRequest {
+    pub version: String,
+    pub source_path: String,
+    pub output_path: String,
+}
+
+/// Compiler → Boot: compilation result
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CompileResult {
+    pub version: String,
+    pub success: bool,
+    pub binary_path: Option<String>,
+    pub errors: Option<String>,
+}
+
+/// Boot → Peripheral: update rejected with structured feedback
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UpdateRejected {
+    pub version: String,
+    pub reason: String,
+    pub errors: Option<String>,
+}
+
+/// Boot → Peripheral: update accepted
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UpdateAccepted {
+    pub version: String,
+}
+
+// ---------------------------------------------------------------------------
+// State management message types (Phase 2)
+// ---------------------------------------------------------------------------
+
+/// Get state: process → Boot
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GetState {
+    pub key: String,
+}
+
+/// Get state response: Boot → process
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GetStateResponse {
+    pub key: String,
+    pub value: serde_json::Value,
+    pub schema_version: u64,
+}
+
+/// Set state: process → Boot
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SetState {
+    pub key: String,
+    pub value: serde_json::Value,
+    pub schema_version: u64,
+}
+
+/// Set state acknowledgement: Boot → process
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SetStateAck {
+    pub key: String,
+    pub success: bool,
+    pub error: Option<String>,
+}
+
+// ---------------------------------------------------------------------------
 // Well-known message type constants
 // ---------------------------------------------------------------------------
 
@@ -98,6 +173,17 @@ pub mod msg_types {
     pub const LEASE_ACK: &str = "LeaseAck";
     pub const RUNLEVEL_CHANGE: &str = "RunlevelChange";
     pub const SHUTDOWN: &str = "Shutdown";
+
+    pub const SUBMIT_UPDATE: &str = "SubmitUpdate";
+    pub const COMPILE_REQUEST: &str = "CompileRequest";
+    pub const COMPILE_RESULT: &str = "CompileResult";
+    pub const UPDATE_REJECTED: &str = "UpdateRejected";
+    pub const UPDATE_ACCEPTED: &str = "UpdateAccepted";
+
+    pub const GET_STATE: &str = "GetState";
+    pub const GET_STATE_RESPONSE: &str = "GetStateResponse";
+    pub const SET_STATE: &str = "SetState";
+    pub const SET_STATE_ACK: &str = "SetStateAck";
 }
 
 /// Check if a message type is a core type that Boot should handle itself.
@@ -110,5 +196,14 @@ pub fn is_core_message(msg_type: &str) -> bool {
             | msg_types::LEASE_ACK
             | msg_types::RUNLEVEL_CHANGE
             | msg_types::SHUTDOWN
+            | msg_types::SUBMIT_UPDATE
+            | msg_types::COMPILE_REQUEST
+            | msg_types::COMPILE_RESULT
+            | msg_types::UPDATE_REJECTED
+            | msg_types::UPDATE_ACCEPTED
+            | msg_types::GET_STATE
+            | msg_types::GET_STATE_RESPONSE
+            | msg_types::SET_STATE
+            | msg_types::SET_STATE_ACK
     )
 }

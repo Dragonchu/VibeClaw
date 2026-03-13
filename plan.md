@@ -495,16 +495,16 @@ loopy/                          ← workspace root
 
 ## 七、实现计划
 
-- [ ] **Phase 1: 微内核骨架**
-  - [ ] 搭建 workspace (Boot + Services + Peripheral)
-  - [ ] 实现基础 IPC (Unix Domain Socket) 路由
-  - [ ] 实现 Boot 微内核：进程启动/停止
-  - [ ] 实现租约心跳机制
-- [ ] **Phase 2: 灵魂出窍 (Update Loop)**
-  - [ ] 实现 compiler-service（Cargo invoke）
-  - [ ] 实现版本目录管理和 Symlink 切换
-  - [ ] 实现基础状态持久化 (JSON)
-  - [ ] 实现状态快照 + WAL 事务化迁移
+- [x] **Phase 1: 微内核骨架**
+  - [x] 搭建 workspace (Boot + Services + Peripheral)
+  - [x] 实现基础 IPC (Unix Domain Socket) 路由
+  - [x] 实现 Boot 微内核：进程启动/停止
+  - [x] 实现租约心跳机制
+- [x] **Phase 2: 灵魂出窍 (Update Loop)**
+  - [x] 实现 compiler-service（Cargo invoke）
+  - [x] 实现版本目录管理和 Symlink 切换
+  - [x] 实现基础状态持久化 (JSON)
+  - [x] 实现状态快照 + WAL 事务化迁移
 - [ ] **Phase 3: 裁判系统 (The Judge)**
   - [ ] 实现 judge-service 基础框架
   - [ ] 定义 `constitution/invariants.json` 第一批测试（协议测试）

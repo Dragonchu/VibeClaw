@@ -133,6 +133,11 @@ impl IpcRouter {
             tracing::info!(peer = %identity, "Peer disconnected");
         }
     }
+
+    pub async fn send(&self, msg: Envelope) -> Result<(), String> {
+        let dest = msg.to.clone();
+        self.send_to(&dest, msg).await
+    }
 }
 
 /// Handle a single connection. The first message must be a Hello handshake

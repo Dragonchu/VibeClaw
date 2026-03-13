@@ -2,6 +2,8 @@ mod ipc;
 mod lease;
 mod microkernel;
 mod runlevel;
+mod state;
+mod version;
 
 use tracing::info;
 

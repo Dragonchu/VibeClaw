@@ -8,22 +8,19 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use tokio::net::UnixStream;
+use tokio::process::Command;
 
 use loopy_ipc::messages::{
-    Envelope, Hello, HealthReport, LeaseRenew, Welcome, msg_types,
+    CompileRequest, CompileResult, Envelope, Hello, HealthReport, LeaseRenew, Welcome, msg_types,
 };
 use loopy_ipc::wire;
 use tracing::{error, info, warn};
 
-/// Service identity
 const IDENTITY: &str = "compiler";
 
-/// Compiler service configuration.
 #[derive(Debug, Clone)]
 struct Config {
-    /// Path to Boot's Unix Domain Socket
     sock_path: PathBuf,
-    /// How often to send lease renewal (should be < Boot's lease_duration)
     heartbeat_interval: Duration,
 }
 
@@ -74,12 +71,10 @@ async fn main() {
 }
 
 async fn run_service(config: &Config) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    // Connect to Boot
     info!(sock = %config.sock_path.display(), "Connecting to Boot");
     let stream = UnixStream::connect(&config.sock_path).await?;
     let (mut reader, mut writer) = stream.into_split();
 
-    // Send Hello handshake
     let hello = Hello {
         protocol_version: "1.0".to_string(),
         capabilities: serde_json::json!(["compile"]),
@@ -96,7 +91,6 @@ async fn run_service(config: &Config) -> Result<(), Box<dyn std::error::Error + 
     wire::write_envelope(&mut writer, &hello_envelope).await?;
     info!("Hello sent, waiting for Welcome...");
 
-    // Wait for Welcome response
     let welcome_envelope = wire::read_envelope(&mut reader).await?;
 
     if welcome_envelope.msg_type != msg_types::WELCOME {
@@ -113,17 +107,15 @@ async fn run_service(config: &Config) -> Result<(), Box<dyn std::error::Error + 
         "Handshake complete — connected to Boot"
     );
 
-    // Start heartbeat + message handling loop
     let mut heartbeat_interval = tokio::time::interval(config.heartbeat_interval);
     let mut tasks_processed: u64 = 0;
 
     loop {
         tokio::select! {
-            // Send periodic heartbeat
             _ = heartbeat_interval.tick() => {
                 let health = HealthReport {
                     runlevel: welcome.runlevel,
-                    memory_bytes: 0, // TODO: real metrics
+                    memory_bytes: 0,
                     cpu_percent: 0.0,
                     tasks_processed,
                 };
@@ -141,7 +133,6 @@ async fn run_service(config: &Config) -> Result<(), Box<dyn std::error::Error + 
                 tracing::trace!("Heartbeat sent");
             }
 
-            // Handle incoming messages
             result = wire::read_envelope(&mut reader) => {
                 let envelope = result?;
 
@@ -156,12 +147,99 @@ async fn run_service(config: &Config) -> Result<(), Box<dyn std::error::Error + 
                     msg_types::RUNLEVEL_CHANGE => {
                         info!("Runlevel change: {}", envelope.payload);
                     }
-                    other => {
-                        warn!("Unhandled message type: {}", other);
-                        // TODO: Phase 2 — handle compile requests
+                    msg_types::COMPILE_REQUEST => {
+                        let result = handle_compile_request(&envelope).await;
+                        let response = Envelope {
+                            from: IDENTITY.to_string(),
+                            to: envelope.from.clone(),
+                            msg_type: msg_types::COMPILE_RESULT.to_string(),
+                            id: envelope.id.clone(),
+                            payload: serde_json::to_value(&result)?,
+                        };
+                        wire::write_envelope(&mut writer, &response).await?;
                         tasks_processed += 1;
                     }
+                    other => {
+                        warn!("Unhandled message type: {}", other);
+                    }
                 }
+            }
+        }
+    }
+}
+
+async fn handle_compile_request(envelope: &Envelope) -> CompileResult {
+    let request: CompileRequest = match serde_json::from_value(envelope.payload.clone()) {
+        Ok(r) => r,
+        Err(e) => {
+            return CompileResult {
+                version: String::new(),
+                success: false,
+                binary_path: None,
+                errors: Some(format!("Invalid CompileRequest payload: {}", e)),
+            };
+        }
+    };
+
+    info!(
+        version = %request.version,
+        source = %request.source_path,
+        output = %request.output_path,
+        "Compiling"
+    );
+
+    let source_path = PathBuf::from(&request.source_path);
+    if !source_path.exists() {
+        return CompileResult {
+            version: request.version,
+            success: false,
+            binary_path: None,
+            errors: Some(format!("Source path does not exist: {}", request.source_path)),
+        };
+    }
+
+    let output = Command::new("cargo")
+        .arg("build")
+        .arg("--release")
+        .arg("--target-dir")
+        .arg(&request.output_path)
+        .current_dir(&request.source_path)
+        .output()
+        .await;
+
+    match output {
+        Ok(result) => {
+            let stderr = String::from_utf8_lossy(&result.stderr).to_string();
+            if result.status.success() {
+                let binary_path = PathBuf::from(&request.output_path)
+                    .join("release")
+                    .join("loopy-peripheral");
+                let binary_str = binary_path.to_string_lossy().to_string();
+
+                info!(version = %request.version, binary = %binary_str, "Compilation succeeded");
+                CompileResult {
+                    version: request.version,
+                    success: true,
+                    binary_path: Some(binary_str),
+                    errors: None,
+                }
+            } else {
+                warn!(version = %request.version, "Compilation failed");
+                CompileResult {
+                    version: request.version,
+                    success: false,
+                    binary_path: None,
+                    errors: Some(stderr),
+                }
+            }
+        }
+        Err(e) => {
+            error!(version = %request.version, "Failed to invoke cargo: {}", e);
+            CompileResult {
+                version: request.version,
+                success: false,
+                binary_path: None,
+                errors: Some(format!("Failed to invoke cargo: {}", e)),
             }
         }
     }
