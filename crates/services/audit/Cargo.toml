@@ -1,0 +1,15 @@
+[package]
+name = "loopy-audit"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "loopy-audit"
+path = "src/main.rs"
+
+[dependencies]
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
