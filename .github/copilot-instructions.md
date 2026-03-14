@@ -23,7 +23,7 @@ All processes communicate exclusively over Unix Domain Sockets via `loopy-ipc`. 
 | `loopy-compiler`   | `crates/services/compiler/` | Receives `CompileRequest`, runs `cargo build --release`, returns `CompileResult`         |
 | `loopy-judge`      | `crates/services/judge/`    | Test runner + scoring (Phase 3, not yet implemented)                                     |
 | `loopy-audit`      | `crates/services/audit/`    | Audit log writer/query (Phase 3, not yet implemented)                                    |
-| `loopy-peripheral` | `crates/peripheral/`        | The self-evolving agent (Phase 6, not yet implemented)                                   |
+| `loopy-peripheral` | `crates/peripheral/`        | The self-evolving agent (DeepSeek LLM, REPL, tool-calling, hot replacement)              |
 
 ### Boot Subsystems (crates/boot/src/)
 
@@ -57,7 +57,7 @@ No test suite exists yet. Rust edition 2024, workspace resolver 3.
 
 ## Dependencies
 
-Intentionally minimal — only: `tokio`, `serde`, `serde_json`, `tracing`, `tracing-subscriber`, and internal `loopy-ipc`. Discuss before adding any new dependency.
+Intentionally minimal — only: `tokio`, `serde`, `serde_json`, `tracing`, `tracing-subscriber`, `reqwest` (peripheral only, for LLM API), and internal `loopy-ipc`. Discuss before adding any new dependency.
 
 ## Project Conventions
 

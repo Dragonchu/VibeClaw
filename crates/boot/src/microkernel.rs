@@ -100,6 +100,25 @@ struct ProbationState {
     envelope_id: String,
 }
 
+const HOT_SWAP_HANDSHAKE_TIMEOUT_SECS: u64 = 60;
+
+enum HotSwapState {
+    Idle,
+    WaitingForOldDisconnect {
+        new_version: String,
+        new_binary: PathBuf,
+        old_version: String,
+        initiated_at: Instant,
+    },
+    WaitingForNewHandshake {
+        new_version: String,
+        old_version: String,
+        initiated_at: Instant,
+        #[allow(dead_code)]
+        child: Option<tokio::process::Child>,
+    },
+}
+
 pub struct Microkernel {
     config: BootConfig,
     lease_manager: LeaseManager,
@@ -111,6 +130,7 @@ pub struct Microkernel {
     probation: Option<ProbationState>,
     constitution_manager: ConstitutionManager,
     protocol_manager: ProtocolManager,
+    hot_swap: HotSwapState,
 }
 
 impl Microkernel {
@@ -140,6 +160,7 @@ impl Microkernel {
             probation: None,
             constitution_manager,
             protocol_manager,
+            hot_swap: HotSwapState::Idle,
         }
     }
 
@@ -173,6 +194,7 @@ impl Microkernel {
             tokio::time::interval(Duration::from_secs(PROBATION_CHECK_INTERVAL_SECS));
         let mut resource_tick =
             tokio::time::interval(Duration::from_secs(RESOURCE_CHECK_INTERVAL_SECS));
+        let mut hot_swap_tick = tokio::time::interval(Duration::from_secs(2));
 
         loop {
             tokio::select! {
@@ -187,6 +209,9 @@ impl Microkernel {
                 }
                 _ = resource_tick.tick() => {
                     self.check_resource_based_transitions(&router_ref).await;
+                }
+                _ = hot_swap_tick.tick() => {
+                    self.check_hot_swap(&router_ref).await;
                 }
             }
         }
@@ -290,6 +315,24 @@ impl Microkernel {
             tracing::warn!(peer = %from, "Failed to send Welcome: {}", e);
         } else {
             tracing::info!(peer = %from, "Handshake complete");
+
+            if from == "peripheral" {
+                if let HotSwapState::WaitingForNewHandshake { ref new_version, .. } = self.hot_swap {
+                    tracing::info!(
+                        version = %new_version,
+                        "New peripheral connected — hot swap complete"
+                    );
+                    let nv = new_version.clone();
+                    self.hot_swap = HotSwapState::Idle;
+                    self.send_audit(
+                        router,
+                        "hot_swap_complete",
+                        Some(&nv),
+                        serde_json::json!({}),
+                    )
+                    .await;
+                }
+            }
         }
     }
 
@@ -884,6 +927,46 @@ impl Microkernel {
             serde_json::json!({}),
         )
         .await;
+
+        let new_binary = self
+            .config
+            .base_dir
+            .join("peripheral")
+            .join(new_version)
+            .join("binary");
+
+        if new_binary.exists() {
+            tracing::info!(
+                version = %new_version,
+                "Initiating hot swap — sending Shutdown to old peripheral"
+            );
+
+            let shutdown = messages::Shutdown {
+                reason: format!("Hot replacement: upgrading to {}", new_version),
+                grace_ms: 5000,
+            };
+            let shutdown_envelope = Envelope {
+                from: "boot".to_string(),
+                to: "peripheral".to_string(),
+                msg_type: msg_types::SHUTDOWN.to_string(),
+                id: String::new(),
+                payload: serde_json::to_value(&shutdown).unwrap_or_default(),
+            };
+            let _ = router.send_to("peripheral", shutdown_envelope).await;
+
+            self.hot_swap = HotSwapState::WaitingForOldDisconnect {
+                new_version: new_version.to_string(),
+                new_binary,
+                old_version,
+                initiated_at: Instant::now(),
+            };
+        } else {
+            tracing::warn!(
+                version = %new_version,
+                "New binary not found at {:?} — skipping hot swap",
+                new_binary
+            );
+        }
     }
 
     async fn check_probation(&mut self, router: &std::sync::Arc<IpcRouter>) {
@@ -1065,12 +1148,17 @@ impl Microkernel {
                     );
                 }
                 LeaseStatus::Dead => {
-                    tracing::error!(peer = %identity, "Peer declared dead (lease expired)");
+                    let during_hot_swap = identity == "peripheral"
+                        && matches!(self.hot_swap, HotSwapState::WaitingForOldDisconnect { .. });
+
+                    tracing::error!(peer = %identity, during_hot_swap, "Peer declared dead (lease expired)");
                     router.remove_peer(&identity).await;
                     self.lease_manager.remove(&identity);
                     self.resource_monitor.remove_peer(&identity);
 
-                    if let Some(suggested) = self.runlevel_manager.record_crash() {
+                    if during_hot_swap {
+                        self.advance_hot_swap_after_disconnect(router).await;
+                    } else if let Some(suggested) = self.runlevel_manager.record_crash() {
                         self.attempt_runlevel_transition(
                             suggested,
                             &format!(
@@ -1084,6 +1172,146 @@ impl Microkernel {
                     }
                 }
                 _ => {}
+            }
+        }
+    }
+
+    async fn advance_hot_swap_after_disconnect(&mut self, router: &std::sync::Arc<IpcRouter>) {
+        let (new_version, new_binary, old_version) = match std::mem::replace(&mut self.hot_swap, HotSwapState::Idle) {
+            HotSwapState::WaitingForOldDisconnect {
+                new_version,
+                new_binary,
+                old_version,
+                ..
+            } => (new_version, new_binary, old_version),
+            other => {
+                self.hot_swap = other;
+                return;
+            }
+        };
+
+        tracing::info!(
+            new_version = %new_version,
+            binary = %new_binary.display(),
+            "Old peripheral disconnected — spawning new version"
+        );
+
+        match self.spawn_peripheral(&new_binary, &new_version).await {
+            Ok(child) => {
+                self.hot_swap = HotSwapState::WaitingForNewHandshake {
+                    new_version,
+                    old_version,
+                    initiated_at: Instant::now(),
+                    child: Some(child),
+                };
+            }
+            Err(e) => {
+                tracing::error!("Failed to spawn new peripheral: {}", e);
+                tracing::warn!("Rolling back to previous version");
+                if let Err(re) = self.version_manager.rollback() {
+                    tracing::error!("Rollback also failed: {}", re);
+                }
+                self.send_audit(
+                    router,
+                    "hot_swap_failed",
+                    Some(&new_version),
+                    serde_json::json!({ "error": e.to_string() }),
+                )
+                .await;
+            }
+        }
+    }
+
+    async fn spawn_peripheral(
+        &self,
+        binary_path: &PathBuf,
+        version: &str,
+    ) -> Result<tokio::process::Child, Box<dyn std::error::Error>> {
+        let source_dir = self
+            .config
+            .base_dir
+            .join("peripheral")
+            .join(version)
+            .join("source");
+
+        let child = tokio::process::Command::new(binary_path)
+            .env("LOOPY_WORKSPACE", &source_dir)
+            .env(
+                "LOOPY_SOCKET",
+                self.config.sock_path.to_string_lossy().to_string(),
+            )
+            .env("RUST_LOG", "info")
+            .spawn()?;
+
+        tracing::info!(
+            version = %version,
+            pid = child.id().unwrap_or(0),
+            "Spawned new peripheral process"
+        );
+
+        Ok(child)
+    }
+
+    async fn check_hot_swap(&mut self, router: &std::sync::Arc<IpcRouter>) {
+        match &self.hot_swap {
+            HotSwapState::Idle => {}
+            HotSwapState::WaitingForOldDisconnect { initiated_at, .. } => {
+                if initiated_at.elapsed() > Duration::from_secs(15) {
+                    tracing::warn!("Old peripheral did not disconnect within timeout — forcing advance");
+                    router.remove_peer("peripheral").await;
+                    self.lease_manager.remove("peripheral");
+                    self.advance_hot_swap_after_disconnect(router).await;
+                }
+            }
+            HotSwapState::WaitingForNewHandshake {
+                new_version,
+                old_version,
+                initiated_at,
+                ..
+            } => {
+                if initiated_at.elapsed() > Duration::from_secs(HOT_SWAP_HANDSHAKE_TIMEOUT_SECS) {
+                    tracing::error!(
+                        new_version = %new_version,
+                        "New peripheral failed to handshake within timeout — rolling back"
+                    );
+                    let nv = new_version.clone();
+                    let ov = old_version.clone();
+
+                    self.hot_swap = HotSwapState::Idle;
+
+                    if let Err(e) = self.version_manager.rollback() {
+                        tracing::error!("Rollback failed: {}", e);
+                    } else {
+                        tracing::info!(version = %ov, "Rolled back to previous version");
+                        let rollback_binary = self
+                            .config
+                            .base_dir
+                            .join("peripheral")
+                            .join(&ov)
+                            .join("binary");
+
+                        if rollback_binary.exists() {
+                            match self.spawn_peripheral(&rollback_binary, &ov).await {
+                                Ok(_child) => {
+                                    tracing::info!(version = %ov, "Spawned rollback peripheral");
+                                }
+                                Err(e) => {
+                                    tracing::error!("Failed to spawn rollback peripheral: {}", e);
+                                }
+                            }
+                        }
+                    }
+
+                    self.send_audit(
+                        router,
+                        "hot_swap_timeout_rollback",
+                        Some(&nv),
+                        serde_json::json!({
+                            "rolled_back_to": ov,
+                        }),
+                    )
+                    .await;
+                }
             }
         }
     }

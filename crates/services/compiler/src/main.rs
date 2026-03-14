@@ -201,6 +201,8 @@ async fn handle_compile_request(envelope: &Envelope) -> CompileResult {
     let output = Command::new("cargo")
         .arg("build")
         .arg("--release")
+        .arg("-p")
+        .arg("loopy-peripheral")
         .arg("--target-dir")
         .arg(&request.output_path)
         .current_dir(&request.source_path)

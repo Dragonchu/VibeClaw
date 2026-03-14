@@ -476,11 +476,13 @@ loopy/                          ← workspace root
 │   └── peripheral/             ← 外围程序
 │       ├── Cargo.toml
 │       └── src/
-│           ├── main.rs
-│           ├── agent.rs        ← Agent 核心
-│           ├── migration.rs    ← 状态迁移 + 回滚逻辑
-│           ├── library/        ← 核心能力库
-│           └── plugins/        ← 插件目录
+│           ├── main.rs         ← 入口 + REPL 交互循环
+│           ├── agent.rs        ← Agent 核心（DeepSeek 对话 + Tool 执行）
+│           ├── deepseek.rs     ← DeepSeek API 客户端
+│           ├── ipc_client.rs   ← IPC 连接 / 握手 / 心跳
+│           ├── tools.rs        ← Tool 定义与执行
+│           ├── source.rs       ← 源码管理 / 暂存区 / workspace 打包
+│           └── migration.rs    ← 状态迁移 + 回滚逻辑
 ├── protocol/
 │   └── messages.json           ← 协议定义
 ├── constitution/
@@ -520,6 +522,10 @@ loopy/                          ← workspace root
 - [x] **Phase 5: 宪法与协议进化**
   - [x] 实现宪法修正案流程（人类签名授权）
   - [x] 实现协议协商式升级
-- [ ] **Phase 6: Agent 逻辑**
-  - [ ] 实现一个简单的 "自我复制" Agent（读取源码 -> 稍微改动 -> 提交）
-  - [ ] 实现双向状态迁移逻辑 (`migrate` + `rollback_migration`)
+- [x] **Phase 6: Agent 逻辑**
+  - [x] 实现一个简单的 "自我复制" Agent（读取源码 -> 稍微改动 -> 提交）
+  - [x] 实现双向状态迁移逻辑 (`migrate` + `rollback_migration`)
+  - [x] 实现 DeepSeek LLM 集成（Function Calling + REPL 交互）
+  - [x] 实现 Agent Tool 系统（read_source_file, list_source_files, write_source_file, submit_update）
+  - [x] 实现源码管理与最小 workspace 打包
+  - [x] 实现 Boot 热替换流程（Shutdown → Spawn → Handshake → Rollback）
