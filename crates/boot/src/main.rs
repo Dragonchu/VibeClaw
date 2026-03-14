@@ -1,6 +1,8 @@
+mod capability;
 mod ipc;
 mod lease;
 mod microkernel;
+mod resource;
 mod runlevel;
 mod state;
 mod version;

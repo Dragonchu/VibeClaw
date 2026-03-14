@@ -10,9 +10,11 @@
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
+use crate::capability::CapabilityManager;
 use crate::ipc::IpcRouter;
 use crate::lease::{LeaseConfig, LeaseManager, LeaseStatus};
-use crate::runlevel::{RunlevelManager, TransitionReason};
+use crate::resource::{ResourceLimits, ResourceMonitor, ViolationSeverity};
+use crate::runlevel::{Runlevel, RunlevelManager, TransitionReason};
 use crate::state::{MigrationTransaction, StateStore};
 use crate::version::VersionManager;
 use loopy_ipc::messages::{self, Envelope, LeaseAck, TestVerdict, Welcome, msg_types};
@@ -23,6 +25,7 @@ pub struct BootConfig {
     pub sock_path: PathBuf,
     pub lease_config: LeaseConfig,
     pub lease_check_interval: Duration,
+    pub resource_limits: ResourceLimits,
 }
 
 impl Default for BootConfig {
@@ -34,6 +37,7 @@ impl Default for BootConfig {
             sock_path,
             lease_config: LeaseConfig::default(),
             lease_check_interval: Duration::from_secs(5),
+            resource_limits: ResourceLimits::default(),
         }
     }
 }
@@ -84,6 +88,7 @@ impl CapabilityRegistry {
 
 const PROBATION_DURATION_SECS: u64 = 3600;
 const PROBATION_CHECK_INTERVAL_SECS: u64 = 30;
+const RESOURCE_CHECK_INTERVAL_SECS: u64 = 10;
 
 struct ProbationState {
     version: String,
@@ -99,6 +104,8 @@ pub struct Microkernel {
     runlevel_manager: RunlevelManager,
     version_manager: VersionManager,
     state_store: StateStore,
+    capability_manager: CapabilityManager,
+    resource_monitor: ResourceMonitor,
     probation: Option<ProbationState>,
 }
 
@@ -108,12 +115,16 @@ impl Microkernel {
         let runlevel_manager = RunlevelManager::new();
         let version_manager = VersionManager::new(&config.base_dir);
         let state_store = StateStore::new(&config.base_dir);
+        let capability_manager = CapabilityManager::new(&config.base_dir);
+        let resource_monitor = ResourceMonitor::new(config.resource_limits.clone());
         Self {
             config,
             lease_manager,
             runlevel_manager,
             version_manager,
             state_store,
+            capability_manager,
+            resource_monitor,
             probation: None,
         }
     }
@@ -143,6 +154,7 @@ impl Microkernel {
 
         let mut lease_tick = tokio::time::interval(self.config.lease_check_interval);
         let mut probation_tick = tokio::time::interval(Duration::from_secs(PROBATION_CHECK_INTERVAL_SECS));
+        let mut resource_tick = tokio::time::interval(Duration::from_secs(RESOURCE_CHECK_INTERVAL_SECS));
 
         loop {
             tokio::select! {
@@ -154,6 +166,9 @@ impl Microkernel {
                 }
                 _ = probation_tick.tick() => {
                     self.check_probation(&router_ref).await;
+                }
+                _ = resource_tick.tick() => {
+                    self.check_resource_based_transitions(&router_ref).await;
                 }
             }
         }
@@ -188,6 +203,9 @@ impl Microkernel {
             }
             msg_types::SET_STATE => {
                 self.handle_set_state(envelope, router).await;
+            }
+            msg_types::RUNLEVEL_REQUEST => {
+                self.handle_runlevel_request(envelope, router).await;
             }
             _ => {
                 if messages::is_core_message(&envelope.msg_type) {
@@ -258,13 +276,57 @@ impl Microkernel {
             .ok()
             .map(|lr| lr.health);
 
-        let next_deadline = match self.lease_manager.renew(from, health) {
+        let next_deadline = match self.lease_manager.renew(from, health.clone()) {
             Some(d) => d,
             None => {
                 tracing::warn!(peer = %from, "LeaseRenew from unregistered peer");
                 return;
             }
         };
+
+        if let Some(ref h) = health {
+            let on_probation = self.probation.is_some()
+                && from == "peripheral";
+
+            let violations = self.resource_monitor.check_health(from, h, on_probation);
+
+            for v in &violations {
+                if v.severity == ViolationSeverity::Hard {
+                    let alert = messages::ResourceViolationAlert {
+                        peer: v.peer.clone(),
+                        resource: v.resource.clone(),
+                        current_value: v.current_value.clone(),
+                        limit_value: v.limit_value.clone(),
+                        severity: "hard".to_string(),
+                    };
+                    self.send_audit(
+                        router,
+                        "resource_violation",
+                        None,
+                        serde_json::to_value(&alert).unwrap_or_default(),
+                    )
+                    .await;
+                }
+            }
+
+            if self.resource_monitor.should_degrade(from) {
+                tracing::error!(
+                    peer = %from,
+                    "Consecutive resource hard violations — triggering degradation"
+                );
+                self.attempt_runlevel_transition(
+                    Runlevel::Safe,
+                    &format!(
+                        "Peer '{}' exceeded resource hard limits consecutively",
+                        from
+                    ),
+                    true,
+                    router,
+                )
+                .await;
+                self.resource_monitor.reset_violations(from);
+            }
+        }
 
         let ack = LeaseAck {
             next_deadline_ms: next_deadline,
@@ -295,6 +357,27 @@ impl Microkernel {
         };
 
         tracing::info!(peer = %from, source = %submit.source_path, "Update submission received");
+
+        if self.runlevel_manager.current().is_restricted() {
+            let rejected = messages::UpdateRejected {
+                version: String::new(),
+                reason: format!(
+                    "Updates not allowed in {:?} mode",
+                    self.runlevel_manager.current()
+                ),
+                errors: None,
+                ..Default::default()
+            };
+            let response = Envelope {
+                from: "boot".to_string(),
+                to: from,
+                msg_type: msg_types::UPDATE_REJECTED.to_string(),
+                id: envelope.id,
+                payload: serde_json::to_value(&rejected).unwrap_or_default(),
+            };
+            let _ = router.send(response).await;
+            return;
+        }
 
         if self.version_manager.is_locked() {
             let rejected = messages::UpdateRejected {
@@ -591,6 +674,63 @@ impl Microkernel {
         let old_version = self.version_manager.current_version().unwrap_or_default();
 
         if !old_version.is_empty() {
+            match self
+                .capability_manager
+                .check_escalation(&old_version, new_version)
+            {
+                Ok(violations) if !violations.is_empty() => {
+                    let violation_strs: Vec<String> =
+                        violations.iter().map(|v| v.to_string()).collect();
+
+                    tracing::warn!(
+                        version = %new_version,
+                        old_version = %old_version,
+                        violations = ?violation_strs,
+                        "Capability escalation detected — requires human approval"
+                    );
+
+                    let escalation = messages::CapabilityEscalation {
+                        version: new_version.to_string(),
+                        violations: violation_strs.clone(),
+                    };
+
+                    self.send_audit(
+                        router,
+                        "capability_escalation_blocked",
+                        Some(new_version),
+                        serde_json::to_value(&escalation).unwrap_or_default(),
+                    )
+                    .await;
+
+                    let rejected = messages::UpdateRejected {
+                        version: new_version.to_string(),
+                        reason: "Capability escalation requires human approval".to_string(),
+                        errors: Some(violation_strs.join("; ")),
+                        allows_patch_retry: true,
+                        ..Default::default()
+                    };
+                    let response = Envelope {
+                        from: "boot".to_string(),
+                        to: "peripheral".to_string(),
+                        msg_type: msg_types::UPDATE_REJECTED.to_string(),
+                        id: envelope_id.to_string(),
+                        payload: serde_json::to_value(&rejected).unwrap_or_default(),
+                    };
+                    let _ = router.send_to("peripheral", response).await;
+                    return;
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        version = %new_version,
+                        "Failed to check capability escalation: {} (proceeding)",
+                        e
+                    );
+                }
+                _ => {}
+            }
+        }
+
+        if !old_version.is_empty() {
             match MigrationTransaction::begin(&mut self.state_store, &old_version, new_version) {
                 Ok(tx) => {
                     if let Err(e) = tx.commit() {
@@ -835,22 +975,213 @@ impl Microkernel {
                     tracing::error!(peer = %identity, "Peer declared dead (lease expired)");
                     router.remove_peer(&identity).await;
                     self.lease_manager.remove(&identity);
+                    self.resource_monitor.remove_peer(&identity);
 
                     if let Some(suggested) = self.runlevel_manager.record_crash() {
-                        let reason = TransitionReason {
-                            description: format!(
+                        self.attempt_runlevel_transition(
+                            suggested,
+                            &format!(
                                 "Peer '{}' dead — consecutive failures triggered degradation",
                                 identity
                             ),
-                            automatic: true,
-                        };
-                        if let Err(e) = self.runlevel_manager.transition(suggested, reason) {
-                            tracing::error!("Runlevel transition failed: {}", e);
-                        }
+                            true,
+                            router,
+                        )
+                        .await;
                     }
                 }
                 _ => {}
             }
+        }
+    }
+
+    async fn handle_runlevel_request(
+        &mut self,
+        envelope: Envelope,
+        router: &std::sync::Arc<IpcRouter>,
+    ) {
+        let from = envelope.from.clone();
+
+        let request: messages::RunlevelRequest =
+            match serde_json::from_value(envelope.payload.clone()) {
+                Ok(r) => r,
+                Err(e) => {
+                    tracing::warn!(peer = %from, "Invalid RunlevelRequest payload: {}", e);
+                    return;
+                }
+            };
+
+        let target = match Runlevel::from_u8(request.to) {
+            Some(r) => r,
+            None => {
+                let result = messages::RunlevelRequestResult {
+                    accepted: false,
+                    from: self.runlevel_manager.current().as_u8(),
+                    to: request.to,
+                    reason: format!("Invalid runlevel: {}", request.to),
+                };
+                let response = Envelope {
+                    from: "boot".to_string(),
+                    to: from,
+                    msg_type: msg_types::RUNLEVEL_REQUEST_RESULT.to_string(),
+                    id: envelope.id,
+                    payload: serde_json::to_value(&result).unwrap_or_default(),
+                };
+                let _ = router.send(response).await;
+                return;
+            }
+        };
+
+        let from_level = self.runlevel_manager.current();
+        let transition_result = self.runlevel_manager.transition(
+            target,
+            TransitionReason {
+                description: format!("Requested by {}: {}", from, request.reason),
+                automatic: false,
+            },
+        );
+
+        let (accepted, reason) = match transition_result {
+            Ok(_) => (true, request.reason.clone()),
+            Err(e) => (false, e),
+        };
+
+        let result = messages::RunlevelRequestResult {
+            accepted,
+            from: from_level.as_u8(),
+            to: target.as_u8(),
+            reason: reason.clone(),
+        };
+
+        let response = Envelope {
+            from: "boot".to_string(),
+            to: from.clone(),
+            msg_type: msg_types::RUNLEVEL_REQUEST_RESULT.to_string(),
+            id: envelope.id,
+            payload: serde_json::to_value(&result).unwrap_or_default(),
+        };
+        let _ = router.send(response).await;
+
+        if accepted {
+            self.broadcast_runlevel_change(from_level, target, &reason, router)
+                .await;
+            self.send_audit(
+                router,
+                "runlevel_change",
+                None,
+                serde_json::json!({
+                    "from": from_level.as_u8(),
+                    "to": target.as_u8(),
+                    "reason": reason,
+                    "requested_by": from,
+                }),
+            )
+            .await;
+
+            if target == Runlevel::Halt {
+                self.initiate_shutdown(router).await;
+            }
+        }
+    }
+
+    async fn attempt_runlevel_transition(
+        &mut self,
+        to: Runlevel,
+        reason: &str,
+        automatic: bool,
+        router: &std::sync::Arc<IpcRouter>,
+    ) {
+        let transition = self.runlevel_manager.transition(
+            to,
+            TransitionReason {
+                description: reason.to_string(),
+                automatic,
+            },
+        );
+
+        if let Ok(old_level) = transition {
+            if old_level != to {
+                self.broadcast_runlevel_change(old_level, to, reason, router)
+                    .await;
+                self.send_audit(
+                    router,
+                    "runlevel_change",
+                    None,
+                    serde_json::json!({
+                        "from": old_level.as_u8(),
+                        "to": to.as_u8(),
+                        "reason": reason,
+                        "automatic": automatic,
+                    }),
+                )
+                .await;
+
+                if to == Runlevel::Halt {
+                    self.initiate_shutdown(router).await;
+                }
+            }
+        }
+    }
+
+    async fn broadcast_runlevel_change(
+        &self,
+        from: Runlevel,
+        to: Runlevel,
+        reason: &str,
+        router: &std::sync::Arc<IpcRouter>,
+    ) {
+        let change = messages::RunlevelChange {
+            from: from.as_u8(),
+            to: to.as_u8(),
+            reason: reason.to_string(),
+        };
+
+        let envelope = Envelope {
+            from: "boot".to_string(),
+            to: String::new(),
+            msg_type: msg_types::RUNLEVEL_CHANGE.to_string(),
+            id: String::new(),
+            payload: serde_json::to_value(&change).unwrap_or_default(),
+        };
+
+        router.broadcast(envelope).await;
+    }
+
+    async fn initiate_shutdown(&self, router: &std::sync::Arc<IpcRouter>) {
+        tracing::warn!("Initiating system shutdown — sending Shutdown to all peers");
+
+        let shutdown = messages::Shutdown {
+            reason: "System entering Halt runlevel".to_string(),
+            grace_ms: 5000,
+        };
+
+        let envelope = Envelope {
+            from: "boot".to_string(),
+            to: String::new(),
+            msg_type: msg_types::SHUTDOWN.to_string(),
+            id: String::new(),
+            payload: serde_json::to_value(&shutdown).unwrap_or_default(),
+        };
+
+        router.broadcast(envelope).await;
+    }
+
+    async fn check_resource_based_transitions(&mut self, router: &std::sync::Arc<IpcRouter>) {
+        let avg_cpu = self
+            .lease_manager
+            .avg_cpu_percent();
+
+        if self.runlevel_manager.should_exit_evolve(avg_cpu) {
+            self.attempt_runlevel_transition(
+                Runlevel::Normal,
+                &format!(
+                    "Resource pressure too high for evolve mode (avg CPU: {:.1}%)",
+                    avg_cpu
+                ),
+                true,
+                router,
+            )
+            .await;
         }
     }
 }

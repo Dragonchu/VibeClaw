@@ -513,10 +513,10 @@ loopy/                          ← workspace root
   - [x] 实现缓刑 (Probation) 机制
   - [x] 实现 audit-service + `judgments.log`
 - [ ] **Phase 4: 安全与降级**
-  - [ ] 实现 Capability-Based Security（`capabilities.json` + OS 沙箱）
-  - [ ] 实现资源配额与 OOM 保护
-  - [ ] 实现运行级别 (Runlevel) 状态机
-  - [ ] 实现优雅降级转换逻辑
+  - [x] 实现 Capability-Based Security（`capabilities.json` + OS 沙箱）
+  - [x] 实现资源配额与 OOM 保护
+  - [x] 实现运行级别 (Runlevel) 状态机
+  - [x] 实现优雅降级转换逻辑
 - [ ] **Phase 5: 宪法与协议进化**
   - [ ] 实现宪法修正案流程（人类签名授权）
   - [ ] 实现协议协商式升级

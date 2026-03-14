@@ -194,4 +194,23 @@ impl LeaseManager {
     pub fn last_health(&self, identity: &str) -> Option<&HealthReport> {
         self.leases.get(identity)?.last_health.as_ref()
     }
+
+    /// Average CPU usage across all leased peers that have reported health.
+    pub fn avg_cpu_percent(&self) -> f64 {
+        let mut total = 0.0;
+        let mut count = 0u32;
+
+        for entry in self.leases.values() {
+            if let Some(ref health) = entry.last_health {
+                total += health.cpu_percent;
+                count += 1;
+            }
+        }
+
+        if count == 0 {
+            0.0
+        } else {
+            total / count as f64
+        }
+    }
 }

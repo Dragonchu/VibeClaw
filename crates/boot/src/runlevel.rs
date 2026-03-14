@@ -33,6 +33,14 @@ impl Runlevel {
             _ => None,
         }
     }
+
+    pub fn allows_evolution(self) -> bool {
+        self == Self::Evolve
+    }
+
+    pub fn is_restricted(self) -> bool {
+        self == Self::Safe || self == Self::Halt
+    }
 }
 
 /// Reason for a runlevel transition.
@@ -54,17 +62,17 @@ pub fn is_valid_transition(from: Runlevel, to: Runlevel) -> bool {
     use Runlevel::*;
     matches!(
         (from, to),
-        // Any level can go to halt
         (_, Halt)
-        // Safe → Normal (recovery)
-        | (Safe, Normal)
-        // Normal → Safe (degradation)
-        | (Normal, Safe)
-        // Normal ↔ Evolve
-        | (Normal, Evolve)
-        | (Evolve, Normal)
+            | (Safe, Normal)
+            | (Normal, Safe)
+            | (Normal, Evolve)
+            | (Evolve, Normal)
+            | (Evolve, Safe)
     )
 }
+
+const CRASH_THRESHOLD_FOR_SAFE: u32 = 2;
+const EVOLVE_CPU_THRESHOLD: f64 = 50.0;
 
 /// Manages the current system runlevel and tracks transitions.
 pub struct RunlevelManager {
@@ -90,6 +98,10 @@ impl RunlevelManager {
         to: Runlevel,
         reason: TransitionReason,
     ) -> Result<Runlevel, String> {
+        if self.current == to {
+            return Ok(self.current);
+        }
+
         if !is_valid_transition(self.current, to) {
             return Err(format!(
                 "Invalid runlevel transition: {:?} → {:?} (reason: {})",
@@ -100,7 +112,6 @@ impl RunlevelManager {
         let from = self.current;
         self.current = to;
 
-        // Reset crash counter on successful recovery
         if to == Runlevel::Normal {
             self.consecutive_crashes = 0;
         }
@@ -120,10 +131,90 @@ impl RunlevelManager {
     /// suggest transition to safe mode.
     pub fn record_crash(&mut self) -> Option<Runlevel> {
         self.consecutive_crashes += 1;
-        if self.consecutive_crashes >= 2 && self.current == Runlevel::Normal {
+        if self.consecutive_crashes >= CRASH_THRESHOLD_FOR_SAFE && self.current == Runlevel::Normal
+        {
             Some(Runlevel::Safe)
         } else {
             None
         }
+    }
+
+    pub fn consecutive_crashes(&self) -> u32 {
+        self.consecutive_crashes
+    }
+
+    /// Check if conditions are met to enter evolve mode.
+    /// Requires Normal mode + low CPU usage.
+    pub fn can_enter_evolve(&self, avg_cpu_percent: f64) -> bool {
+        self.current == Runlevel::Normal && avg_cpu_percent < EVOLVE_CPU_THRESHOLD
+    }
+
+    /// Check if evolve mode should be exited due to resource pressure.
+    pub fn should_exit_evolve(&self, avg_cpu_percent: f64) -> bool {
+        self.current == Runlevel::Evolve && avg_cpu_percent >= EVOLVE_CPU_THRESHOLD
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn normal_to_safe_after_crashes() {
+        let mut mgr = RunlevelManager::new();
+        assert_eq!(mgr.record_crash(), None);
+        assert_eq!(mgr.record_crash(), Some(Runlevel::Safe));
+    }
+
+    #[test]
+    fn transition_resets_crashes() {
+        let mut mgr = RunlevelManager::new();
+        mgr.record_crash();
+        mgr.record_crash();
+        let _ = mgr.transition(
+            Runlevel::Safe,
+            TransitionReason {
+                description: "test".to_string(),
+                automatic: true,
+            },
+        );
+        let _ = mgr.transition(
+            Runlevel::Normal,
+            TransitionReason {
+                description: "recovery".to_string(),
+                automatic: false,
+            },
+        );
+        assert_eq!(mgr.consecutive_crashes(), 0);
+    }
+
+    #[test]
+    fn evolve_to_safe_is_valid() {
+        assert!(is_valid_transition(Runlevel::Evolve, Runlevel::Safe));
+    }
+
+    #[test]
+    fn safe_to_evolve_is_invalid() {
+        assert!(!is_valid_transition(Runlevel::Safe, Runlevel::Evolve));
+    }
+
+    #[test]
+    fn can_enter_evolve_checks_cpu() {
+        let mgr = RunlevelManager::new();
+        assert!(mgr.can_enter_evolve(30.0));
+        assert!(!mgr.can_enter_evolve(60.0));
+    }
+
+    #[test]
+    fn noop_on_same_level() {
+        let mut mgr = RunlevelManager::new();
+        let result = mgr.transition(
+            Runlevel::Normal,
+            TransitionReason {
+                description: "no change".to_string(),
+                automatic: false,
+            },
+        );
+        assert!(result.is_ok());
     }
 }

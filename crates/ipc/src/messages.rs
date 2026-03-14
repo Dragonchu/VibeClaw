@@ -200,6 +200,40 @@ pub struct AuditLog {
 }
 
 // ---------------------------------------------------------------------------
+// Security & degradation message types (Phase 4)
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResourceViolationAlert {
+    pub peer: String,
+    pub resource: String,
+    pub current_value: String,
+    pub limit_value: String,
+    /// "soft" or "hard"
+    pub severity: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RunlevelRequest {
+    pub to: u8,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RunlevelRequestResult {
+    pub accepted: bool,
+    pub from: u8,
+    pub to: u8,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CapabilityEscalation {
+    pub version: String,
+    pub violations: Vec<String>,
+}
+
+// ---------------------------------------------------------------------------
 // State management message types (Phase 2)
 // ---------------------------------------------------------------------------
 
@@ -261,6 +295,11 @@ pub mod msg_types {
     pub const PROBATION_STARTED: &str = "ProbationStarted";
     pub const PROBATION_ENDED: &str = "ProbationEnded";
     pub const AUDIT_LOG: &str = "AuditLog";
+
+    pub const RESOURCE_VIOLATION: &str = "ResourceViolation";
+    pub const RUNLEVEL_REQUEST: &str = "RunlevelRequest";
+    pub const RUNLEVEL_REQUEST_RESULT: &str = "RunlevelRequestResult";
+    pub const CAPABILITY_ESCALATION: &str = "CapabilityEscalation";
 }
 
 /// Check if a message type is a core type that Boot should handle itself.
@@ -287,5 +326,9 @@ pub fn is_core_message(msg_type: &str) -> bool {
             | msg_types::PROBATION_STARTED
             | msg_types::PROBATION_ENDED
             | msg_types::AUDIT_LOG
+            | msg_types::RESOURCE_VIOLATION
+            | msg_types::RUNLEVEL_REQUEST
+            | msg_types::RUNLEVEL_REQUEST_RESULT
+            | msg_types::CAPABILITY_ESCALATION
     )
 }
