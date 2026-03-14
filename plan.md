@@ -506,12 +506,12 @@ loopy/                          ← workspace root
   - [x] 实现基础状态持久化 (JSON)
   - [x] 实现状态快照 + WAL 事务化迁移
 - [ ] **Phase 3: 裁判系统 (The Judge)**
-  - [ ] 实现 judge-service 基础框架
-  - [ ] 定义 `constitution/invariants.json` 第一批测试（协议测试）
-  - [ ] 实现多维评分系统 (`constitution/benchmarks.json`)
-  - [ ] 实现正当程序：结构化反馈 + 修正重试
-  - [ ] 实现缓刑 (Probation) 机制
-  - [ ] 实现 audit-service + `judgments.log`
+  - [x] 实现 judge-service 基础框架
+  - [x] 定义 `constitution/invariants.json` 第一批测试（协议测试）
+  - [x] 实现多维评分系统 (`constitution/benchmarks.json`)
+  - [x] 实现正当程序：结构化反馈 + 修正重试
+  - [x] 实现缓刑 (Probation) 机制
+  - [x] 实现 audit-service + `judgments.log`
 - [ ] **Phase 4: 安全与降级**
   - [ ] 实现 Capability-Based Security（`capabilities.json` + OS 沙箱）
   - [ ] 实现资源配额与 OOM 保护

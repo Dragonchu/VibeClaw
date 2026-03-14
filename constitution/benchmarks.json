@@ -1,0 +1,31 @@
+{
+  "version": "1.0",
+  "dimensions": [
+    {
+      "name": "protocol_compliance",
+      "weight": 0.3,
+      "min_threshold": 0.95,
+      "description": "Adherence to IPC protocol specification"
+    },
+    {
+      "name": "task_correctness",
+      "weight": 0.3,
+      "min_threshold": 0.85,
+      "description": "Correctness of task execution results"
+    },
+    {
+      "name": "response_latency",
+      "weight": 0.2,
+      "min_threshold": 0.7,
+      "description": "Response time within acceptable bounds"
+    },
+    {
+      "name": "resource_efficiency",
+      "weight": 0.2,
+      "min_threshold": 0.6,
+      "description": "Memory and CPU usage efficiency"
+    }
+  ],
+  "overall_min": 0.8,
+  "regression_tolerance": 0.05
+}

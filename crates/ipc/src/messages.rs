@@ -115,17 +115,88 @@ pub struct CompileResult {
 }
 
 /// Boot → Peripheral: update rejected with structured feedback
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct UpdateRejected {
     pub version: String,
     pub reason: String,
     pub errors: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub failed_tests: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scores: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub suggestion: Option<String>,
+    #[serde(default)]
+    pub allows_patch_retry: bool,
 }
 
 /// Boot → Peripheral: update accepted
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UpdateAccepted {
     pub version: String,
+}
+
+// ---------------------------------------------------------------------------
+// Judge system message types (Phase 3)
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TestRequest {
+    pub version: String,
+    pub binary_path: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InvariantResult {
+    pub test_id: String,
+    pub passed: bool,
+    pub detail: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DimensionScore {
+    pub name: String,
+    pub score: f64,
+    pub min_threshold: f64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TestVerdict {
+    Pass,
+    SoftFail,
+    HardFail,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TestResult {
+    pub version: String,
+    pub verdict: TestVerdict,
+    pub invariant_results: Vec<InvariantResult>,
+    pub dimension_scores: Vec<DimensionScore>,
+    pub overall_score: f64,
+    pub suggestion: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProbationStarted {
+    pub version: String,
+    pub duration_secs: u64,
+    pub constraints: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProbationEnded {
+    pub version: String,
+    pub passed: bool,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuditLog {
+    pub timestamp: String,
+    pub event: String,
+    pub version: Option<String>,
+    pub details: serde_json::Value,
 }
 
 // ---------------------------------------------------------------------------
@@ -184,6 +255,12 @@ pub mod msg_types {
     pub const GET_STATE_RESPONSE: &str = "GetStateResponse";
     pub const SET_STATE: &str = "SetState";
     pub const SET_STATE_ACK: &str = "SetStateAck";
+
+    pub const TEST_REQUEST: &str = "TestRequest";
+    pub const TEST_RESULT: &str = "TestResult";
+    pub const PROBATION_STARTED: &str = "ProbationStarted";
+    pub const PROBATION_ENDED: &str = "ProbationEnded";
+    pub const AUDIT_LOG: &str = "AuditLog";
 }
 
 /// Check if a message type is a core type that Boot should handle itself.
@@ -205,5 +282,10 @@ pub fn is_core_message(msg_type: &str) -> bool {
             | msg_types::GET_STATE_RESPONSE
             | msg_types::SET_STATE
             | msg_types::SET_STATE_ACK
+            | msg_types::TEST_REQUEST
+            | msg_types::TEST_RESULT
+            | msg_types::PROBATION_STARTED
+            | msg_types::PROBATION_ENDED
+            | msg_types::AUDIT_LOG
     )
 }

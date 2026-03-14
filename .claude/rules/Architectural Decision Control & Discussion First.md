@@ -16,11 +16,7 @@ You **must** pause and discuss with me before performing any of the following ac
 ## Guidelines
 
 - **Implementation vs. Design**: You may proceed with the "how" (writing specific function logic, unit tests, or refactoring existing code) without prior discussion ONLY if the "what" (the design) has already been approved.
-- **Proposal Format**: When a discussion is triggered, provide a concise **[Design Proposal]** including:
-  - The proposed approach/tool.
-  - Pros and cons (Rationale).
-  - Potential alternatives.
-- **Wait for Approval**: Do not output large blocks of implementation code until I provide explicit confirmation (e.g., "Proceed," "Approved," or "Looks good").
+- **Tool Use**: Always use the "AskQuestion" tool to clarify any architectural decisions before coding.
 
 ## Tone & Style
 

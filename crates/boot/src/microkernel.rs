@@ -8,14 +8,14 @@
 //! - Track runlevel state
 
 use std::path::PathBuf;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::ipc::IpcRouter;
 use crate::lease::{LeaseConfig, LeaseManager, LeaseStatus};
 use crate::runlevel::{RunlevelManager, TransitionReason};
 use crate::state::{MigrationTransaction, StateStore};
 use crate::version::VersionManager;
-use loopy_ipc::messages::{self, Envelope, LeaseAck, Welcome, msg_types};
+use loopy_ipc::messages::{self, Envelope, LeaseAck, TestVerdict, Welcome, msg_types};
 
 #[derive(Debug, Clone)]
 pub struct BootConfig {
@@ -82,12 +82,24 @@ impl CapabilityRegistry {
     }
 }
 
+const PROBATION_DURATION_SECS: u64 = 3600;
+const PROBATION_CHECK_INTERVAL_SECS: u64 = 30;
+
+struct ProbationState {
+    version: String,
+    binary_path: String,
+    started_at: Instant,
+    duration: Duration,
+    envelope_id: String,
+}
+
 pub struct Microkernel {
     config: BootConfig,
     lease_manager: LeaseManager,
     runlevel_manager: RunlevelManager,
     version_manager: VersionManager,
     state_store: StateStore,
+    probation: Option<ProbationState>,
 }
 
 impl Microkernel {
@@ -102,6 +114,7 @@ impl Microkernel {
             runlevel_manager,
             version_manager,
             state_store,
+            probation: None,
         }
     }
 
@@ -129,6 +142,7 @@ impl Microkernel {
         );
 
         let mut lease_tick = tokio::time::interval(self.config.lease_check_interval);
+        let mut probation_tick = tokio::time::interval(Duration::from_secs(PROBATION_CHECK_INTERVAL_SECS));
 
         loop {
             tokio::select! {
@@ -137,6 +151,9 @@ impl Microkernel {
                 }
                 _ = lease_tick.tick() => {
                     self.check_leases(&router_ref).await;
+                }
+                _ = probation_tick.tick() => {
+                    self.check_probation(&router_ref).await;
                 }
             }
         }
@@ -162,6 +179,9 @@ impl Microkernel {
             }
             msg_types::COMPILE_RESULT => {
                 self.handle_compile_result(envelope, router).await;
+            }
+            msg_types::TEST_RESULT => {
+                self.handle_test_result(envelope, router).await;
             }
             msg_types::GET_STATE => {
                 self.handle_get_state(envelope, router).await;
@@ -281,6 +301,7 @@ impl Microkernel {
                 version: String::new(),
                 reason: "Version manager locked due to consecutive failures".to_string(),
                 errors: None,
+                ..Default::default()
             };
             let response = Envelope {
                 from: "boot".to_string(),
@@ -301,6 +322,7 @@ impl Microkernel {
                     version: String::new(),
                     reason: format!("Failed to allocate version: {}", e),
                     errors: None,
+                    ..Default::default()
                 };
                 let response = Envelope {
                     from: "boot".to_string(),
@@ -321,6 +343,7 @@ impl Microkernel {
                 version: version_info.version,
                 reason: format!("Failed to copy source: {}", e),
                 errors: None,
+                ..Default::default()
             };
             let response = Envelope {
                 from: "boot".to_string(),
@@ -358,6 +381,7 @@ impl Microkernel {
                 version: version_info.version,
                 reason: format!("Compiler service unavailable: {}", e),
                 errors: None,
+                ..Default::default()
             };
             let response = Envelope {
                 from: "boot".to_string(),
@@ -390,6 +414,7 @@ impl Microkernel {
                 version: result.version,
                 reason: "Compilation failed".to_string(),
                 errors: result.errors,
+                ..Default::default()
             };
             let response = Envelope {
                 from: "boot".to_string(),
@@ -402,7 +427,7 @@ impl Microkernel {
             return;
         }
 
-        tracing::info!(version = %result.version, "Compilation succeeded — switching version");
+        tracing::info!(version = %result.version, "Compilation succeeded — sending to judge for testing");
 
         if let Some(binary_path_str) = &result.binary_path {
             let binary_path = PathBuf::from(binary_path_str);
@@ -424,8 +449,146 @@ impl Microkernel {
             }
         }
 
+        let version_dir = self.config.base_dir.join("peripheral").join(&result.version);
+        let binary_path = version_dir.join("binary").to_string_lossy().to_string();
+
+        let test_req = messages::TestRequest {
+            version: result.version.clone(),
+            binary_path,
+        };
+
+        let test_envelope = Envelope {
+            from: "boot".to_string(),
+            to: "judge".to_string(),
+            msg_type: msg_types::TEST_REQUEST.to_string(),
+            id: envelope.id.clone(),
+            payload: serde_json::to_value(&test_req).unwrap_or_default(),
+        };
+
+        if let Err(e) = router.send_to("judge", test_envelope).await {
+            tracing::warn!("Judge service unavailable ({}), skipping tests — proceeding with version switch", e);
+            self.finalize_version_switch(&result.version, &envelope.id, router).await;
+        }
+
+        self.send_audit(router, "compilation_succeeded", Some(&result.version), serde_json::json!({})).await;
+    }
+
+    async fn handle_test_result(&mut self, envelope: Envelope, router: &std::sync::Arc<IpcRouter>) {
+        let result: messages::TestResult = match serde_json::from_value(envelope.payload.clone()) {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::warn!("Invalid TestResult payload: {}", e);
+                return;
+            }
+        };
+
+        tracing::info!(
+            version = %result.version,
+            verdict = ?result.verdict,
+            overall_score = result.overall_score,
+            "Test result received"
+        );
+
+        match result.verdict {
+            TestVerdict::Pass => {
+                self.send_audit(router, "test_passed", Some(&result.version), serde_json::json!({
+                    "overall_score": result.overall_score,
+                    "dimension_scores": result.dimension_scores,
+                })).await;
+                self.finalize_version_switch(&result.version, &envelope.id, router).await;
+            }
+            TestVerdict::SoftFail => {
+                tracing::warn!(version = %result.version, "Soft fail — entering probation");
+
+                self.probation = Some(ProbationState {
+                    version: result.version.clone(),
+                    binary_path: self.config.base_dir
+                        .join("peripheral")
+                        .join(&result.version)
+                        .join("binary")
+                        .to_string_lossy()
+                        .to_string(),
+                    started_at: Instant::now(),
+                    duration: Duration::from_secs(PROBATION_DURATION_SECS),
+                    envelope_id: envelope.id.clone(),
+                });
+
+                self.lease_manager.set_probation("peripheral", true);
+
+                let probation_msg = messages::ProbationStarted {
+                    version: result.version.clone(),
+                    duration_secs: PROBATION_DURATION_SECS,
+                    constraints: serde_json::json!({
+                        "heartbeat_interval_secs": 5,
+                        "resource_quota_multiplier": 0.5,
+                    }),
+                };
+                let response = Envelope {
+                    from: "boot".to_string(),
+                    to: "peripheral".to_string(),
+                    msg_type: msg_types::PROBATION_STARTED.to_string(),
+                    id: envelope.id.clone(),
+                    payload: serde_json::to_value(&probation_msg).unwrap_or_default(),
+                };
+                let _ = router.send_to("peripheral", response).await;
+
+                self.send_audit(router, "probation_started", Some(&result.version), serde_json::json!({
+                    "overall_score": result.overall_score,
+                    "suggestion": result.suggestion,
+                    "duration_secs": PROBATION_DURATION_SECS,
+                })).await;
+            }
+            TestVerdict::HardFail => {
+                tracing::warn!(version = %result.version, "Test hard fail — rejecting update");
+
+                let locked = self.version_manager.record_failure();
+                if locked {
+                    tracing::error!("Version manager locked after consecutive failures");
+                }
+
+                let failed_tests: Vec<String> = result
+                    .invariant_results
+                    .iter()
+                    .filter(|r| !r.passed)
+                    .map(|r| r.test_id.clone())
+                    .collect();
+
+                let scores_value = serde_json::to_value(&result.dimension_scores).ok();
+
+                let rejected = messages::UpdateRejected {
+                    version: result.version.clone(),
+                    reason: "Test suite failed".to_string(),
+                    errors: None,
+                    failed_tests,
+                    scores: scores_value,
+                    suggestion: result.suggestion,
+                    allows_patch_retry: true,
+                };
+                let response = Envelope {
+                    from: "boot".to_string(),
+                    to: "peripheral".to_string(),
+                    msg_type: msg_types::UPDATE_REJECTED.to_string(),
+                    id: envelope.id.clone(),
+                    payload: serde_json::to_value(&rejected).unwrap_or_default(),
+                };
+                let _ = router.send_to("peripheral", response).await;
+
+                self.send_audit(router, "update_rejected", Some(&result.version), serde_json::json!({
+                    "reason": "Test suite hard fail",
+                    "overall_score": result.overall_score,
+                    "failed_tests": rejected.failed_tests,
+                })).await;
+            }
+        }
+    }
+
+    async fn finalize_version_switch(
+        &mut self,
+        new_version: &str,
+        envelope_id: &str,
+        router: &std::sync::Arc<IpcRouter>,
+    ) {
         let old_version = self.version_manager.current_version().unwrap_or_default();
-        let new_version = &result.version;
 
         if !old_version.is_empty() {
             match MigrationTransaction::begin(&mut self.state_store, &old_version, new_version) {
@@ -436,12 +599,13 @@ impl Microkernel {
                             version: new_version.to_string(),
                             reason: format!("State migration failed: {}", e),
                             errors: None,
+                            ..Default::default()
                         };
                         let response = Envelope {
                             from: "boot".to_string(),
                             to: "peripheral".to_string(),
                             msg_type: msg_types::UPDATE_REJECTED.to_string(),
-                            id: envelope.id,
+                            id: envelope_id.to_string(),
                             payload: serde_json::to_value(&rejected).unwrap_or_default(),
                         };
                         let _ = router.send_to("peripheral", response).await;
@@ -468,12 +632,13 @@ impl Microkernel {
                     version: new_version.to_string(),
                     reason: format!("Version switch failed: {}", e),
                     errors: None,
+                    ..Default::default()
                 };
                 let response = Envelope {
                     from: "boot".to_string(),
                     to: "peripheral".to_string(),
                     msg_type: msg_types::UPDATE_REJECTED.to_string(),
-                    id: envelope.id,
+                    id: envelope_id.to_string(),
                     payload: serde_json::to_value(&rejected).unwrap_or_default(),
                 };
                 let _ = router.send_to("peripheral", response).await;
@@ -488,10 +653,100 @@ impl Microkernel {
             from: "boot".to_string(),
             to: "peripheral".to_string(),
             msg_type: msg_types::UPDATE_ACCEPTED.to_string(),
-            id: envelope.id,
+            id: envelope_id.to_string(),
             payload: serde_json::to_value(&accepted).unwrap_or_default(),
         };
         let _ = router.send_to("peripheral", response).await;
+
+        self.send_audit(router, "update_accepted", Some(new_version), serde_json::json!({})).await;
+    }
+
+    async fn check_probation(&mut self, router: &std::sync::Arc<IpcRouter>) {
+        let probation = match &self.probation {
+            Some(p) => p,
+            None => return,
+        };
+
+        if probation.started_at.elapsed() < probation.duration {
+            return;
+        }
+
+        let version = probation.version.clone();
+        let binary_path = probation.binary_path.clone();
+        let envelope_id = probation.envelope_id.clone();
+
+        tracing::info!(version = %version, "Probation period expired — requesting re-evaluation");
+
+        let test_req = messages::TestRequest {
+            version: version.clone(),
+            binary_path,
+        };
+
+        let test_envelope = Envelope {
+            from: "boot".to_string(),
+            to: "judge".to_string(),
+            msg_type: msg_types::TEST_REQUEST.to_string(),
+            id: format!("probation-reeval-{}", envelope_id),
+            payload: serde_json::to_value(&test_req).unwrap_or_default(),
+        };
+
+        self.lease_manager.set_probation("peripheral", false);
+        self.probation = None;
+
+        if let Err(e) = router.send_to("judge", test_envelope).await {
+            tracing::error!("Failed to send probation re-evaluation request: {}", e);
+
+            let probation_msg = messages::ProbationEnded {
+                version: version.clone(),
+                passed: false,
+                reason: format!("Judge unavailable for re-evaluation: {}", e),
+            };
+            let response = Envelope {
+                from: "boot".to_string(),
+                to: "peripheral".to_string(),
+                msg_type: msg_types::PROBATION_ENDED.to_string(),
+                id: envelope_id,
+                payload: serde_json::to_value(&probation_msg).unwrap_or_default(),
+            };
+            let _ = router.send_to("peripheral", response).await;
+
+            self.send_audit(router, "probation_failed", Some(&version), serde_json::json!({
+                "reason": "Judge unavailable for re-evaluation",
+            })).await;
+        }
+    }
+
+    async fn send_audit(
+        &self,
+        router: &std::sync::Arc<IpcRouter>,
+        event: &str,
+        version: Option<&str>,
+        details: serde_json::Value,
+    ) {
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs()
+            .to_string();
+
+        let audit = messages::AuditLog {
+            timestamp,
+            event: event.to_string(),
+            version: version.map(|v| v.to_string()),
+            details,
+        };
+
+        let envelope = Envelope {
+            from: "boot".to_string(),
+            to: "audit".to_string(),
+            msg_type: msg_types::AUDIT_LOG.to_string(),
+            id: String::new(),
+            payload: serde_json::to_value(&audit).unwrap_or_default(),
+        };
+
+        if let Err(e) = router.send_to("audit", envelope).await {
+            tracing::debug!("Audit service not available: {} (non-critical)", e);
+        }
     }
 
     async fn handle_get_state(&self, envelope: Envelope, router: &std::sync::Arc<IpcRouter>) {
