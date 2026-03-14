@@ -1,0 +1,173 @@
+{
+  "protocol_version": "1.0",
+  "messages": {
+    "Hello": {
+      "category": "handshake",
+      "direction": "peer->boot",
+      "schema": {},
+      "added_in": "1.0"
+    },
+    "Welcome": {
+      "category": "handshake",
+      "direction": "boot->peer",
+      "schema": {},
+      "added_in": "1.0"
+    },
+    "LeaseRenew": {
+      "category": "heartbeat",
+      "direction": "peer->boot",
+      "schema": {},
+      "added_in": "1.0"
+    },
+    "LeaseAck": {
+      "category": "heartbeat",
+      "direction": "boot->peer",
+      "schema": {},
+      "added_in": "1.0"
+    },
+    "RunlevelChange": {
+      "category": "runlevel",
+      "direction": "boot->all",
+      "schema": {},
+      "added_in": "1.0"
+    },
+    "Shutdown": {
+      "category": "lifecycle",
+      "direction": "boot->peer",
+      "schema": {},
+      "added_in": "1.0"
+    },
+    "SubmitUpdate": {
+      "category": "update",
+      "direction": "peripheral->boot",
+      "schema": {},
+      "added_in": "1.0"
+    },
+    "CompileRequest": {
+      "category": "update",
+      "direction": "boot->compiler",
+      "schema": {},
+      "added_in": "1.0"
+    },
+    "CompileResult": {
+      "category": "update",
+      "direction": "compiler->boot",
+      "schema": {},
+      "added_in": "1.0"
+    },
+    "UpdateRejected": {
+      "category": "update",
+      "direction": "boot->peripheral",
+      "schema": {},
+      "added_in": "1.0"
+    },
+    "UpdateAccepted": {
+      "category": "update",
+      "direction": "boot->peripheral",
+      "schema": {},
+      "added_in": "1.0"
+    },
+    "GetState": {
+      "category": "state",
+      "direction": "peer->boot",
+      "schema": {},
+      "added_in": "1.0"
+    },
+    "GetStateResponse": {
+      "category": "state",
+      "direction": "boot->peer",
+      "schema": {},
+      "added_in": "1.0"
+    },
+    "SetState": {
+      "category": "state",
+      "direction": "peer->boot",
+      "schema": {},
+      "added_in": "1.0"
+    },
+    "SetStateAck": {
+      "category": "state",
+      "direction": "boot->peer",
+      "schema": {},
+      "added_in": "1.0"
+    },
+    "TestRequest": {
+      "category": "judge",
+      "direction": "boot->judge",
+      "schema": {},
+      "added_in": "1.0"
+    },
+    "TestResult": {
+      "category": "judge",
+      "direction": "judge->boot",
+      "schema": {},
+      "added_in": "1.0"
+    },
+    "ProbationStarted": {
+      "category": "judge",
+      "direction": "boot->peripheral",
+      "schema": {},
+      "added_in": "1.0"
+    },
+    "ProbationEnded": {
+      "category": "judge",
+      "direction": "boot->peripheral",
+      "schema": {},
+      "added_in": "1.0"
+    },
+    "AuditLog": {
+      "category": "audit",
+      "direction": "boot->audit",
+      "schema": {},
+      "added_in": "1.0"
+    },
+    "ResourceViolation": {
+      "category": "security",
+      "direction": "boot->audit",
+      "schema": {},
+      "added_in": "1.0"
+    },
+    "RunlevelRequest": {
+      "category": "runlevel",
+      "direction": "peer->boot",
+      "schema": {},
+      "added_in": "1.0"
+    },
+    "RunlevelRequestResult": {
+      "category": "runlevel",
+      "direction": "boot->peer",
+      "schema": {},
+      "added_in": "1.0"
+    },
+    "CapabilityEscalation": {
+      "category": "security",
+      "direction": "boot->audit",
+      "schema": {},
+      "added_in": "1.0"
+    },
+    "ConstitutionAmendmentProposal": {
+      "category": "constitution",
+      "direction": "peer->boot",
+      "schema": {},
+      "added_in": "1.0"
+    },
+    "ConstitutionAmendmentResult": {
+      "category": "constitution",
+      "direction": "boot->peer",
+      "schema": {},
+      "added_in": "1.0"
+    },
+    "ProtocolExtensionProposal": {
+      "category": "protocol",
+      "direction": "peer->boot",
+      "schema": {},
+      "added_in": "1.0"
+    },
+    "ProtocolExtensionResult": {
+      "category": "protocol",
+      "direction": "boot->peer",
+      "schema": {},
+      "added_in": "1.0"
+    }
+  }
+}

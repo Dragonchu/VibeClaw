@@ -11,8 +11,10 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use crate::capability::CapabilityManager;
+use crate::constitution::ConstitutionManager;
 use crate::ipc::IpcRouter;
 use crate::lease::{LeaseConfig, LeaseManager, LeaseStatus};
+use crate::protocol::ProtocolManager;
 use crate::resource::{ResourceLimits, ResourceMonitor, ViolationSeverity};
 use crate::runlevel::{Runlevel, RunlevelManager, TransitionReason};
 use crate::state::{MigrationTransaction, StateStore};
@@ -107,6 +109,8 @@ pub struct Microkernel {
     capability_manager: CapabilityManager,
     resource_monitor: ResourceMonitor,
     probation: Option<ProbationState>,
+    constitution_manager: ConstitutionManager,
+    protocol_manager: ProtocolManager,
 }
 
 impl Microkernel {
@@ -117,6 +121,14 @@ impl Microkernel {
         let state_store = StateStore::new(&config.base_dir);
         let capability_manager = CapabilityManager::new(&config.base_dir);
         let resource_monitor = ResourceMonitor::new(config.resource_limits.clone());
+        let constitution_manager = ConstitutionManager::new(&config.base_dir).unwrap_or_else(|e| {
+            tracing::error!("Failed to init ConstitutionManager: {}", e);
+            panic!("Constitution manager init failed: {}", e);
+        });
+        let protocol_manager = ProtocolManager::new(&config.base_dir).unwrap_or_else(|e| {
+            tracing::error!("Failed to init ProtocolManager: {}", e);
+            panic!("Protocol manager init failed: {}", e);
+        });
         Self {
             config,
             lease_manager,
@@ -126,12 +138,16 @@ impl Microkernel {
             capability_manager,
             resource_monitor,
             probation: None,
+            constitution_manager,
+            protocol_manager,
         }
     }
 
     pub async fn run(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         std::fs::create_dir_all(&self.config.base_dir)?;
-        self.state_store.init().map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
+        self.state_store
+            .init()
+            .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
 
         let mut router = IpcRouter::new(self.config.sock_path.clone());
         let mut boot_rx = router.take_boot_rx();
@@ -153,8 +169,10 @@ impl Microkernel {
         );
 
         let mut lease_tick = tokio::time::interval(self.config.lease_check_interval);
-        let mut probation_tick = tokio::time::interval(Duration::from_secs(PROBATION_CHECK_INTERVAL_SECS));
-        let mut resource_tick = tokio::time::interval(Duration::from_secs(RESOURCE_CHECK_INTERVAL_SECS));
+        let mut probation_tick =
+            tokio::time::interval(Duration::from_secs(PROBATION_CHECK_INTERVAL_SECS));
+        let mut resource_tick =
+            tokio::time::interval(Duration::from_secs(RESOURCE_CHECK_INTERVAL_SECS));
 
         loop {
             tokio::select! {
@@ -206,6 +224,12 @@ impl Microkernel {
             }
             msg_types::RUNLEVEL_REQUEST => {
                 self.handle_runlevel_request(envelope, router).await;
+            }
+            msg_types::CONSTITUTION_AMENDMENT_PROPOSAL => {
+                self.handle_constitution_amendment(envelope, router).await;
+            }
+            msg_types::PROTOCOL_EXTENSION_PROPOSAL => {
+                self.handle_protocol_extension(envelope, router).await;
             }
             _ => {
                 if messages::is_core_message(&envelope.msg_type) {
@@ -285,8 +309,7 @@ impl Microkernel {
         };
 
         if let Some(ref h) = health {
-            let on_probation = self.probation.is_some()
-                && from == "peripheral";
+            let on_probation = self.probation.is_some() && from == "peripheral";
 
             let violations = self.resource_monitor.check_health(from, h, on_probation);
 
@@ -345,10 +368,15 @@ impl Microkernel {
         }
     }
 
-    async fn handle_submit_update(&mut self, envelope: Envelope, router: &std::sync::Arc<IpcRouter>) {
+    async fn handle_submit_update(
+        &mut self,
+        envelope: Envelope,
+        router: &std::sync::Arc<IpcRouter>,
+    ) {
         let from = envelope.from.clone();
 
-        let submit: messages::SubmitUpdate = match serde_json::from_value(envelope.payload.clone()) {
+        let submit: messages::SubmitUpdate = match serde_json::from_value(envelope.payload.clone())
+        {
             Ok(s) => s,
             Err(e) => {
                 tracing::warn!(peer = %from, "Invalid SubmitUpdate payload: {}", e);
@@ -420,7 +448,10 @@ impl Microkernel {
         };
 
         let source_path = PathBuf::from(&submit.source_path);
-        if let Err(e) = self.version_manager.copy_source(&source_path, &version_info.source_dir) {
+        if let Err(e) = self
+            .version_manager
+            .copy_source(&source_path, &version_info.source_dir)
+        {
             tracing::error!("Failed to copy source: {}", e);
             let rejected = messages::UpdateRejected {
                 version: version_info.version,
@@ -442,7 +473,11 @@ impl Microkernel {
         let compile_req = messages::CompileRequest {
             version: version_info.version.clone(),
             source_path: version_info.source_dir.to_string_lossy().to_string(),
-            output_path: version_info.dir.join("target").to_string_lossy().to_string(),
+            output_path: version_info
+                .dir
+                .join("target")
+                .to_string_lossy()
+                .to_string(),
         };
 
         tracing::info!(
@@ -477,8 +512,13 @@ impl Microkernel {
         }
     }
 
-    async fn handle_compile_result(&mut self, envelope: Envelope, router: &std::sync::Arc<IpcRouter>) {
-        let result: messages::CompileResult = match serde_json::from_value(envelope.payload.clone()) {
+    async fn handle_compile_result(
+        &mut self,
+        envelope: Envelope,
+        router: &std::sync::Arc<IpcRouter>,
+    ) {
+        let result: messages::CompileResult = match serde_json::from_value(envelope.payload.clone())
+        {
             Ok(r) => r,
             Err(e) => {
                 tracing::warn!("Invalid CompileResult payload: {}", e);
@@ -514,7 +554,11 @@ impl Microkernel {
 
         if let Some(binary_path_str) = &result.binary_path {
             let binary_path = PathBuf::from(binary_path_str);
-            let version_dir = self.config.base_dir.join("peripheral").join(&result.version);
+            let version_dir = self
+                .config
+                .base_dir
+                .join("peripheral")
+                .join(&result.version);
             let target_binary = version_dir.join("binary");
 
             if binary_path.exists() {
@@ -532,7 +576,11 @@ impl Microkernel {
             }
         }
 
-        let version_dir = self.config.base_dir.join("peripheral").join(&result.version);
+        let version_dir = self
+            .config
+            .base_dir
+            .join("peripheral")
+            .join(&result.version);
         let binary_path = version_dir.join("binary").to_string_lossy().to_string();
 
         let test_req = messages::TestRequest {
@@ -549,11 +597,21 @@ impl Microkernel {
         };
 
         if let Err(e) = router.send_to("judge", test_envelope).await {
-            tracing::warn!("Judge service unavailable ({}), skipping tests — proceeding with version switch", e);
-            self.finalize_version_switch(&result.version, &envelope.id, router).await;
+            tracing::warn!(
+                "Judge service unavailable ({}), skipping tests — proceeding with version switch",
+                e
+            );
+            self.finalize_version_switch(&result.version, &envelope.id, router)
+                .await;
         }
 
-        self.send_audit(router, "compilation_succeeded", Some(&result.version), serde_json::json!({})).await;
+        self.send_audit(
+            router,
+            "compilation_succeeded",
+            Some(&result.version),
+            serde_json::json!({}),
+        )
+        .await;
     }
 
     async fn handle_test_result(&mut self, envelope: Envelope, router: &std::sync::Arc<IpcRouter>) {
@@ -574,18 +632,27 @@ impl Microkernel {
 
         match result.verdict {
             TestVerdict::Pass => {
-                self.send_audit(router, "test_passed", Some(&result.version), serde_json::json!({
-                    "overall_score": result.overall_score,
-                    "dimension_scores": result.dimension_scores,
-                })).await;
-                self.finalize_version_switch(&result.version, &envelope.id, router).await;
+                self.send_audit(
+                    router,
+                    "test_passed",
+                    Some(&result.version),
+                    serde_json::json!({
+                        "overall_score": result.overall_score,
+                        "dimension_scores": result.dimension_scores,
+                    }),
+                )
+                .await;
+                self.finalize_version_switch(&result.version, &envelope.id, router)
+                    .await;
             }
             TestVerdict::SoftFail => {
                 tracing::warn!(version = %result.version, "Soft fail — entering probation");
 
                 self.probation = Some(ProbationState {
                     version: result.version.clone(),
-                    binary_path: self.config.base_dir
+                    binary_path: self
+                        .config
+                        .base_dir
                         .join("peripheral")
                         .join(&result.version)
                         .join("binary")
@@ -615,11 +682,17 @@ impl Microkernel {
                 };
                 let _ = router.send_to("peripheral", response).await;
 
-                self.send_audit(router, "probation_started", Some(&result.version), serde_json::json!({
-                    "overall_score": result.overall_score,
-                    "suggestion": result.suggestion,
-                    "duration_secs": PROBATION_DURATION_SECS,
-                })).await;
+                self.send_audit(
+                    router,
+                    "probation_started",
+                    Some(&result.version),
+                    serde_json::json!({
+                        "overall_score": result.overall_score,
+                        "suggestion": result.suggestion,
+                        "duration_secs": PROBATION_DURATION_SECS,
+                    }),
+                )
+                .await;
             }
             TestVerdict::HardFail => {
                 tracing::warn!(version = %result.version, "Test hard fail — rejecting update");
@@ -656,11 +729,17 @@ impl Microkernel {
                 };
                 let _ = router.send_to("peripheral", response).await;
 
-                self.send_audit(router, "update_rejected", Some(&result.version), serde_json::json!({
-                    "reason": "Test suite hard fail",
-                    "overall_score": result.overall_score,
-                    "failed_tests": rejected.failed_tests,
-                })).await;
+                self.send_audit(
+                    router,
+                    "update_rejected",
+                    Some(&result.version),
+                    serde_json::json!({
+                        "reason": "Test suite hard fail",
+                        "overall_score": result.overall_score,
+                        "failed_tests": rejected.failed_tests,
+                    }),
+                )
+                .await;
             }
         }
     }
@@ -798,7 +877,13 @@ impl Microkernel {
         };
         let _ = router.send_to("peripheral", response).await;
 
-        self.send_audit(router, "update_accepted", Some(new_version), serde_json::json!({})).await;
+        self.send_audit(
+            router,
+            "update_accepted",
+            Some(new_version),
+            serde_json::json!({}),
+        )
+        .await;
     }
 
     async fn check_probation(&mut self, router: &std::sync::Arc<IpcRouter>) {
@@ -850,9 +935,15 @@ impl Microkernel {
             };
             let _ = router.send_to("peripheral", response).await;
 
-            self.send_audit(router, "probation_failed", Some(&version), serde_json::json!({
-                "reason": "Judge unavailable for re-evaluation",
-            })).await;
+            self.send_audit(
+                router,
+                "probation_failed",
+                Some(&version),
+                serde_json::json!({
+                    "reason": "Judge unavailable for re-evaluation",
+                }),
+            )
+            .await;
         }
     }
 
@@ -935,7 +1026,9 @@ impl Microkernel {
             }
         };
 
-        let result = self.state_store.set(&request.key, request.value, request.schema_version);
+        let result = self
+            .state_store
+            .set(&request.key, request.value, request.schema_version);
 
         let ack = messages::SetStateAck {
             key: request.key,
@@ -1167,9 +1260,7 @@ impl Microkernel {
     }
 
     async fn check_resource_based_transitions(&mut self, router: &std::sync::Arc<IpcRouter>) {
-        let avg_cpu = self
-            .lease_manager
-            .avg_cpu_percent();
+        let avg_cpu = self.lease_manager.avg_cpu_percent();
 
         if self.runlevel_manager.should_exit_evolve(avg_cpu) {
             self.attempt_runlevel_transition(
@@ -1183,5 +1274,165 @@ impl Microkernel {
             )
             .await;
         }
+    }
+
+    async fn handle_constitution_amendment(
+        &mut self,
+        envelope: Envelope,
+        router: &std::sync::Arc<IpcRouter>,
+    ) {
+        let from = envelope.from.clone();
+
+        let proposal: messages::ConstitutionAmendmentProposal =
+            match serde_json::from_value(envelope.payload.clone()) {
+                Ok(p) => p,
+                Err(e) => {
+                    tracing::warn!(peer = %from, "Invalid ConstitutionAmendmentProposal: {}", e);
+                    return;
+                }
+            };
+
+        tracing::info!(
+            peer = %from,
+            amendment_type = %proposal.amendment_type,
+            target = %proposal.target_file,
+            "Constitution amendment proposal received"
+        );
+
+        let result = self.constitution_manager.propose_amendment(
+            &proposal.amendment_type,
+            &proposal.target_file,
+            &proposal.description,
+            &proposal.changes,
+            &proposal.signature,
+        );
+
+        let (accepted, amendment_id, reason) = match result {
+            Ok(record) => (
+                true,
+                record.id.clone(),
+                format!("Amendment {} approved", record.id),
+            ),
+            Err(e) => (false, String::new(), e),
+        };
+
+        let response_payload = messages::ConstitutionAmendmentResult {
+            accepted,
+            amendment_id: amendment_id.clone(),
+            reason: reason.clone(),
+        };
+
+        let response = Envelope {
+            from: "boot".to_string(),
+            to: from.clone(),
+            msg_type: msg_types::CONSTITUTION_AMENDMENT_RESULT.to_string(),
+            id: envelope.id,
+            payload: serde_json::to_value(&response_payload).unwrap_or_default(),
+        };
+
+        if let Err(e) = router.send_to(&from, response).await {
+            tracing::warn!(peer = %from, "Failed to send ConstitutionAmendmentResult: {}", e);
+        }
+
+        self.send_audit(
+            router,
+            if accepted {
+                "constitution_amendment_accepted"
+            } else {
+                "constitution_amendment_rejected"
+            },
+            None,
+            serde_json::json!({
+                "amendment_id": amendment_id,
+                "amendment_type": proposal.amendment_type,
+                "target_file": proposal.target_file,
+                "reason": reason,
+                "proposed_by": from,
+            }),
+        )
+        .await;
+    }
+
+    async fn handle_protocol_extension(
+        &mut self,
+        envelope: Envelope,
+        router: &std::sync::Arc<IpcRouter>,
+    ) {
+        let from = envelope.from.clone();
+
+        let proposal: messages::ProtocolExtensionProposal =
+            match serde_json::from_value(envelope.payload.clone()) {
+                Ok(p) => p,
+                Err(e) => {
+                    tracing::warn!(peer = %from, "Invalid ProtocolExtensionProposal: {}", e);
+                    return;
+                }
+            };
+
+        tracing::info!(
+            peer = %from,
+            breaking = proposal.breaking,
+            "Protocol extension proposal received"
+        );
+
+        let sig_verifier = |data: &str, sig: &str| -> bool {
+            self.constitution_manager.verify_signature(data, sig)
+        };
+
+        let result = self.protocol_manager.propose_extension(
+            &proposal.new_messages,
+            proposal.breaking,
+            &proposal.description,
+            if proposal.signature.is_some() {
+                Some(&sig_verifier as &dyn Fn(&str, &str) -> bool)
+            } else {
+                None
+            },
+            proposal.signature.as_deref(),
+        );
+
+        let (accepted, new_version, reason) = match result {
+            Ok(version) => (
+                true,
+                Some(version.clone()),
+                format!("Protocol updated to {}", version),
+            ),
+            Err(e) => (false, None, e),
+        };
+
+        let response_payload = messages::ProtocolExtensionResult {
+            accepted,
+            new_protocol_version: new_version.clone(),
+            reason: reason.clone(),
+        };
+
+        let response = Envelope {
+            from: "boot".to_string(),
+            to: from.clone(),
+            msg_type: msg_types::PROTOCOL_EXTENSION_RESULT.to_string(),
+            id: envelope.id,
+            payload: serde_json::to_value(&response_payload).unwrap_or_default(),
+        };
+
+        if let Err(e) = router.send_to(&from, response).await {
+            tracing::warn!(peer = %from, "Failed to send ProtocolExtensionResult: {}", e);
+        }
+
+        self.send_audit(
+            router,
+            if accepted {
+                "protocol_extension_accepted"
+            } else {
+                "protocol_extension_rejected"
+            },
+            None,
+            serde_json::json!({
+                "new_version": new_version,
+                "breaking": proposal.breaking,
+                "reason": reason,
+                "proposed_by": from,
+            }),
+        )
+        .await;
     }
 }

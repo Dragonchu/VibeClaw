@@ -268,6 +268,41 @@ pub struct SetStateAck {
 }
 
 // ---------------------------------------------------------------------------
+// Constitution & protocol evolution message types (Phase 5)
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConstitutionAmendmentProposal {
+    pub amendment_type: String,
+    pub target_file: String,
+    pub description: String,
+    pub changes: serde_json::Value,
+    pub signature: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConstitutionAmendmentResult {
+    pub accepted: bool,
+    pub amendment_id: String,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProtocolExtensionProposal {
+    pub new_messages: serde_json::Value,
+    pub breaking: bool,
+    pub description: String,
+    pub signature: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProtocolExtensionResult {
+    pub accepted: bool,
+    pub new_protocol_version: Option<String>,
+    pub reason: String,
+}
+
+// ---------------------------------------------------------------------------
 // Well-known message type constants
 // ---------------------------------------------------------------------------
 
@@ -300,6 +335,11 @@ pub mod msg_types {
     pub const RUNLEVEL_REQUEST: &str = "RunlevelRequest";
     pub const RUNLEVEL_REQUEST_RESULT: &str = "RunlevelRequestResult";
     pub const CAPABILITY_ESCALATION: &str = "CapabilityEscalation";
+
+    pub const CONSTITUTION_AMENDMENT_PROPOSAL: &str = "ConstitutionAmendmentProposal";
+    pub const CONSTITUTION_AMENDMENT_RESULT: &str = "ConstitutionAmendmentResult";
+    pub const PROTOCOL_EXTENSION_PROPOSAL: &str = "ProtocolExtensionProposal";
+    pub const PROTOCOL_EXTENSION_RESULT: &str = "ProtocolExtensionResult";
 }
 
 /// Check if a message type is a core type that Boot should handle itself.
@@ -330,5 +370,9 @@ pub fn is_core_message(msg_type: &str) -> bool {
             | msg_types::RUNLEVEL_REQUEST
             | msg_types::RUNLEVEL_REQUEST_RESULT
             | msg_types::CAPABILITY_ESCALATION
+            | msg_types::CONSTITUTION_AMENDMENT_PROPOSAL
+            | msg_types::CONSTITUTION_AMENDMENT_RESULT
+            | msg_types::PROTOCOL_EXTENSION_PROPOSAL
+            | msg_types::PROTOCOL_EXTENSION_RESULT
     )
 }
