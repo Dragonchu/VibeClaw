@@ -303,6 +303,114 @@ pub struct ProtocolExtensionResult {
 }
 
 // ---------------------------------------------------------------------------
+// Admin management message types
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AdminStatusRequest {}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AdminStatusResponse {
+    pub runlevel: u8,
+    pub current_version: Option<String>,
+    pub rollback_version: Option<String>,
+    pub connected_peers: Vec<String>,
+    pub version_locked: bool,
+    pub probation_active: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AdminListVersionsRequest {}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VersionEntry {
+    pub version: String,
+    pub is_current: bool,
+    pub is_rollback: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AdminListVersionsResponse {
+    pub versions: Vec<VersionEntry>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AdminVersionDetailRequest {
+    pub version: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AdminVersionDetailResponse {
+    pub version: String,
+    pub manifest: Option<serde_json::Value>,
+    pub is_current: bool,
+    pub is_rollback: bool,
+    pub has_binary: bool,
+    pub has_source: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AdminCleanupVersionsRequest {
+    pub keep: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AdminCleanupVersionsResponse {
+    pub removed: Vec<String>,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AdminForceRollbackRequest {
+    pub reason: String,
+    pub to_version: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AdminForceRollbackResponse {
+    pub success: bool,
+    pub rolled_back_to: Option<String>,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AdminLeaseStatusRequest {}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PeerLeaseInfo {
+    pub identity: String,
+    pub status: String,
+    pub probation: bool,
+    pub last_health: Option<HealthReport>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AdminLeaseStatusResponse {
+    pub leases: Vec<PeerLeaseInfo>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AdminUnlockVersionRequest {}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AdminUnlockVersionResponse {
+    pub success: bool,
+    pub was_locked: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AdminAuditQueryRequest {
+    pub event_filter: Option<String>,
+    pub limit: Option<usize>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AdminAuditQueryResponse {
+    pub entries: Vec<AuditLog>,
+    pub error: Option<String>,
+}
+
+// ---------------------------------------------------------------------------
 // Well-known message type constants
 // ---------------------------------------------------------------------------
 
@@ -340,6 +448,23 @@ pub mod msg_types {
     pub const CONSTITUTION_AMENDMENT_RESULT: &str = "ConstitutionAmendmentResult";
     pub const PROTOCOL_EXTENSION_PROPOSAL: &str = "ProtocolExtensionProposal";
     pub const PROTOCOL_EXTENSION_RESULT: &str = "ProtocolExtensionResult";
+
+    pub const ADMIN_STATUS_REQUEST: &str = "AdminStatusRequest";
+    pub const ADMIN_STATUS_RESPONSE: &str = "AdminStatusResponse";
+    pub const ADMIN_LIST_VERSIONS_REQUEST: &str = "AdminListVersionsRequest";
+    pub const ADMIN_LIST_VERSIONS_RESPONSE: &str = "AdminListVersionsResponse";
+    pub const ADMIN_VERSION_DETAIL_REQUEST: &str = "AdminVersionDetailRequest";
+    pub const ADMIN_VERSION_DETAIL_RESPONSE: &str = "AdminVersionDetailResponse";
+    pub const ADMIN_CLEANUP_VERSIONS_REQUEST: &str = "AdminCleanupVersionsRequest";
+    pub const ADMIN_CLEANUP_VERSIONS_RESPONSE: &str = "AdminCleanupVersionsResponse";
+    pub const ADMIN_FORCE_ROLLBACK_REQUEST: &str = "AdminForceRollbackRequest";
+    pub const ADMIN_FORCE_ROLLBACK_RESPONSE: &str = "AdminForceRollbackResponse";
+    pub const ADMIN_LEASE_STATUS_REQUEST: &str = "AdminLeaseStatusRequest";
+    pub const ADMIN_LEASE_STATUS_RESPONSE: &str = "AdminLeaseStatusResponse";
+    pub const ADMIN_UNLOCK_VERSION_REQUEST: &str = "AdminUnlockVersionRequest";
+    pub const ADMIN_UNLOCK_VERSION_RESPONSE: &str = "AdminUnlockVersionResponse";
+    pub const ADMIN_AUDIT_QUERY_REQUEST: &str = "AdminAuditQueryRequest";
+    pub const ADMIN_AUDIT_QUERY_RESPONSE: &str = "AdminAuditQueryResponse";
 }
 
 /// Check if a message type is a core type that Boot should handle itself.
@@ -374,5 +499,21 @@ pub fn is_core_message(msg_type: &str) -> bool {
             | msg_types::CONSTITUTION_AMENDMENT_RESULT
             | msg_types::PROTOCOL_EXTENSION_PROPOSAL
             | msg_types::PROTOCOL_EXTENSION_RESULT
+            | msg_types::ADMIN_STATUS_REQUEST
+            | msg_types::ADMIN_STATUS_RESPONSE
+            | msg_types::ADMIN_LIST_VERSIONS_REQUEST
+            | msg_types::ADMIN_LIST_VERSIONS_RESPONSE
+            | msg_types::ADMIN_VERSION_DETAIL_REQUEST
+            | msg_types::ADMIN_VERSION_DETAIL_RESPONSE
+            | msg_types::ADMIN_CLEANUP_VERSIONS_REQUEST
+            | msg_types::ADMIN_CLEANUP_VERSIONS_RESPONSE
+            | msg_types::ADMIN_FORCE_ROLLBACK_REQUEST
+            | msg_types::ADMIN_FORCE_ROLLBACK_RESPONSE
+            | msg_types::ADMIN_LEASE_STATUS_REQUEST
+            | msg_types::ADMIN_LEASE_STATUS_RESPONSE
+            | msg_types::ADMIN_UNLOCK_VERSION_REQUEST
+            | msg_types::ADMIN_UNLOCK_VERSION_RESPONSE
+            | msg_types::ADMIN_AUDIT_QUERY_REQUEST
+            | msg_types::ADMIN_AUDIT_QUERY_RESPONSE
     )
 }

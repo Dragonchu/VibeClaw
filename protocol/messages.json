@@ -168,6 +168,102 @@
       "direction": "boot->peer",
       "schema": {},
       "added_in": "1.0"
+    },
+    "AdminStatusRequest": {
+      "category": "admin",
+      "direction": "admin->boot",
+      "schema": {},
+      "added_in": "1.0"
+    },
+    "AdminStatusResponse": {
+      "category": "admin",
+      "direction": "boot->admin",
+      "schema": {},
+      "added_in": "1.0"
+    },
+    "AdminListVersionsRequest": {
+      "category": "admin",
+      "direction": "admin->boot",
+      "schema": {},
+      "added_in": "1.0"
+    },
+    "AdminListVersionsResponse": {
+      "category": "admin",
+      "direction": "boot->admin",
+      "schema": {},
+      "added_in": "1.0"
+    },
+    "AdminVersionDetailRequest": {
+      "category": "admin",
+      "direction": "admin->boot",
+      "schema": {},
+      "added_in": "1.0"
+    },
+    "AdminVersionDetailResponse": {
+      "category": "admin",
+      "direction": "boot->admin",
+      "schema": {},
+      "added_in": "1.0"
+    },
+    "AdminCleanupVersionsRequest": {
+      "category": "admin",
+      "direction": "admin->boot",
+      "schema": {},
+      "added_in": "1.0"
+    },
+    "AdminCleanupVersionsResponse": {
+      "category": "admin",
+      "direction": "boot->admin",
+      "schema": {},
+      "added_in": "1.0"
+    },
+    "AdminForceRollbackRequest": {
+      "category": "admin",
+      "direction": "admin->boot",
+      "schema": {},
+      "added_in": "1.0"
+    },
+    "AdminForceRollbackResponse": {
+      "category": "admin",
+      "direction": "boot->admin",
+      "schema": {},
+      "added_in": "1.0"
+    },
+    "AdminLeaseStatusRequest": {
+      "category": "admin",
+      "direction": "admin->boot",
+      "schema": {},
+      "added_in": "1.0"
+    },
+    "AdminLeaseStatusResponse": {
+      "category": "admin",
+      "direction": "boot->admin",
+      "schema": {},
+      "added_in": "1.0"
+    },
+    "AdminUnlockVersionRequest": {
+      "category": "admin",
+      "direction": "admin->boot",
+      "schema": {},
+      "added_in": "1.0"
+    },
+    "AdminUnlockVersionResponse": {
+      "category": "admin",
+      "direction": "boot->admin",
+      "schema": {},
+      "added_in": "1.0"
+    },
+    "AdminAuditQueryRequest": {
+      "category": "admin",
+      "direction": "admin->boot",
+      "schema": {},
+      "added_in": "1.0"
+    },
+    "AdminAuditQueryResponse": {
+      "category": "admin",
+      "direction": "boot->admin",
+      "schema": {},
+      "added_in": "1.0"
     }
   }
 }

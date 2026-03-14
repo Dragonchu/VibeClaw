@@ -1,0 +1,17 @@
+[package]
+name = "loopy-admin"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "loopy-admin"
+path = "src/main.rs"
+
+[dependencies]
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+clap = { workspace = true }
+loopy-ipc = { workspace = true }

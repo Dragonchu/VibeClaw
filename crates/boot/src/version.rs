@@ -182,6 +182,87 @@ impl VersionManager {
         self.locked
     }
 
+    pub fn unlock(&mut self) -> bool {
+        let was_locked = self.locked;
+        self.locked = false;
+        self.consecutive_failures = 0;
+        if was_locked {
+            tracing::info!("Version manager unlocked by admin");
+        }
+        was_locked
+    }
+
+    pub fn list_versions(&self) -> Vec<String> {
+        let mut versions = Vec::new();
+        if let Ok(entries) = fs::read_dir(&self.base_dir) {
+            for entry in entries.flatten() {
+                let name = entry.file_name().to_string_lossy().to_string();
+                if name.starts_with('v') && entry.path().is_dir() {
+                    versions.push(name);
+                }
+            }
+        }
+        versions.sort();
+        versions
+    }
+
+    pub fn version_detail(&self, version: &str) -> Result<serde_json::Value, String> {
+        let version_dir = self.base_dir.join(version);
+        if !version_dir.exists() {
+            return Err(format!("Version directory does not exist: {}", version));
+        }
+
+        let manifest_path = version_dir.join("manifest.json");
+        let manifest = if manifest_path.exists() {
+            let content = fs::read_to_string(&manifest_path)
+                .map_err(|e| format!("Failed to read manifest: {}", e))?;
+            serde_json::from_str(&content)
+                .map_err(|e| format!("Failed to parse manifest: {}", e))?
+        } else {
+            serde_json::Value::Null
+        };
+
+        Ok(manifest)
+    }
+
+    pub fn has_binary(&self, version: &str) -> bool {
+        self.base_dir.join(version).join("binary").exists()
+    }
+
+    pub fn has_source(&self, version: &str) -> bool {
+        self.base_dir.join(version).join("source").is_dir()
+    }
+
+    pub fn cleanup_old_versions(&self, keep: usize) -> Result<Vec<String>, String> {
+        let current = self.current_version();
+        let rollback = self.rollback_version();
+        let mut all = self.list_versions();
+
+        all.retain(|v| Some(v.as_str()) != current.as_deref() && Some(v.as_str()) != rollback.as_deref());
+
+        if all.len() <= keep {
+            return Ok(Vec::new());
+        }
+
+        let to_remove = all.len() - keep;
+        let removable: Vec<String> = all.into_iter().take(to_remove).collect();
+        let mut removed = Vec::new();
+
+        for v in &removable {
+            let dir = self.base_dir.join(v);
+            if dir.exists() {
+                if let Err(e) = fs::remove_dir_all(&dir) {
+                    tracing::error!(version = %v, "Failed to remove version directory: {}", e);
+                    continue;
+                }
+                removed.push(v.clone());
+                tracing::info!(version = %v, "Old version cleaned up");
+            }
+        }
+
+        Ok(removed)
+    }
+
     pub fn copy_source(&self, from: &Path, to: &Path) -> Result<(), String> {
         copy_dir_recursive(from, to).map_err(|e| {
             format!(

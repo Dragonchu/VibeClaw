@@ -195,6 +195,17 @@ impl LeaseManager {
         self.leases.get(identity)?.last_health.as_ref()
     }
 
+    pub fn registered_peers(&self) -> Vec<String> {
+        self.leases.keys().cloned().collect()
+    }
+
+    pub fn all_lease_info(&self) -> Vec<(String, bool, Option<HealthReport>)> {
+        self.leases
+            .iter()
+            .map(|(id, entry)| (id.clone(), entry.probation, entry.last_health.clone()))
+            .collect()
+    }
+
     /// Average CPU usage across all leased peers that have reported health.
     pub fn avg_cpu_percent(&self) -> f64 {
         let mut total = 0.0;

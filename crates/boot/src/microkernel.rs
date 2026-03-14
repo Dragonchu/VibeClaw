@@ -59,6 +59,7 @@ impl CapabilityRegistry {
             "judge" => Some(&["test", "score"]),
             "audit" => Some(&["log_write", "log_query"]),
             "peripheral" => Some(&["agent"]),
+            "admin" => Some(&["admin"]),
             _ => None,
         }
     }
@@ -255,6 +256,30 @@ impl Microkernel {
             }
             msg_types::PROTOCOL_EXTENSION_PROPOSAL => {
                 self.handle_protocol_extension(envelope, router).await;
+            }
+            msg_types::ADMIN_STATUS_REQUEST => {
+                self.handle_admin_status(envelope, router).await;
+            }
+            msg_types::ADMIN_LIST_VERSIONS_REQUEST => {
+                self.handle_admin_list_versions(envelope, router).await;
+            }
+            msg_types::ADMIN_VERSION_DETAIL_REQUEST => {
+                self.handle_admin_version_detail(envelope, router).await;
+            }
+            msg_types::ADMIN_CLEANUP_VERSIONS_REQUEST => {
+                self.handle_admin_cleanup_versions(envelope, router).await;
+            }
+            msg_types::ADMIN_FORCE_ROLLBACK_REQUEST => {
+                self.handle_admin_force_rollback(envelope, router).await;
+            }
+            msg_types::ADMIN_LEASE_STATUS_REQUEST => {
+                self.handle_admin_lease_status(envelope, router).await;
+            }
+            msg_types::ADMIN_UNLOCK_VERSION_REQUEST => {
+                self.handle_admin_unlock_version(envelope, router).await;
+            }
+            msg_types::ADMIN_AUDIT_QUERY_REQUEST => {
+                self.handle_admin_audit_query(envelope, router).await;
             }
             _ => {
                 if messages::is_core_message(&envelope.msg_type) {
@@ -1662,5 +1687,282 @@ impl Microkernel {
             }),
         )
         .await;
+    }
+
+    async fn handle_admin_status(&self, envelope: Envelope, router: &std::sync::Arc<IpcRouter>) {
+        let from = envelope.from.clone();
+        let connected = router.connected_peers().await;
+
+        let resp = messages::AdminStatusResponse {
+            runlevel: self.runlevel_manager.current().as_u8(),
+            current_version: self.version_manager.current_version(),
+            rollback_version: self.version_manager.rollback_version(),
+            connected_peers: connected,
+            version_locked: self.version_manager.is_locked(),
+            probation_active: self.probation.is_some(),
+        };
+
+        let response = Envelope {
+            from: "boot".to_string(),
+            to: from.clone(),
+            msg_type: msg_types::ADMIN_STATUS_RESPONSE.to_string(),
+            id: envelope.id,
+            payload: serde_json::to_value(&resp).unwrap_or_default(),
+        };
+        if let Err(e) = router.send_to(&from, response).await {
+            tracing::warn!(peer = %from, "Failed to send AdminStatusResponse: {}", e);
+        }
+    }
+
+    async fn handle_admin_list_versions(
+        &self,
+        envelope: Envelope,
+        router: &std::sync::Arc<IpcRouter>,
+    ) {
+        let from = envelope.from.clone();
+        let current = self.version_manager.current_version();
+        let rollback = self.version_manager.rollback_version();
+
+        let versions: Vec<messages::VersionEntry> = self
+            .version_manager
+            .list_versions()
+            .into_iter()
+            .map(|v| messages::VersionEntry {
+                is_current: current.as_deref() == Some(v.as_str()),
+                is_rollback: rollback.as_deref() == Some(v.as_str()),
+                version: v,
+            })
+            .collect();
+
+        let resp = messages::AdminListVersionsResponse { versions };
+        let response = Envelope {
+            from: "boot".to_string(),
+            to: from.clone(),
+            msg_type: msg_types::ADMIN_LIST_VERSIONS_RESPONSE.to_string(),
+            id: envelope.id,
+            payload: serde_json::to_value(&resp).unwrap_or_default(),
+        };
+        if let Err(e) = router.send_to(&from, response).await {
+            tracing::warn!(peer = %from, "Failed to send AdminListVersionsResponse: {}", e);
+        }
+    }
+
+    async fn handle_admin_version_detail(
+        &self,
+        envelope: Envelope,
+        router: &std::sync::Arc<IpcRouter>,
+    ) {
+        let from = envelope.from.clone();
+        let req: messages::AdminVersionDetailRequest =
+            match serde_json::from_value(envelope.payload.clone()) {
+                Ok(r) => r,
+                Err(e) => {
+                    tracing::warn!(peer = %from, "Invalid AdminVersionDetailRequest: {}", e);
+                    return;
+                }
+            };
+
+        let current = self.version_manager.current_version();
+        let rollback = self.version_manager.rollback_version();
+
+        let manifest = self.version_manager.version_detail(&req.version).ok();
+
+        let resp = messages::AdminVersionDetailResponse {
+            version: req.version.clone(),
+            manifest,
+            is_current: current.as_deref() == Some(req.version.as_str()),
+            is_rollback: rollback.as_deref() == Some(req.version.as_str()),
+            has_binary: self.version_manager.has_binary(&req.version),
+            has_source: self.version_manager.has_source(&req.version),
+        };
+
+        let response = Envelope {
+            from: "boot".to_string(),
+            to: from.clone(),
+            msg_type: msg_types::ADMIN_VERSION_DETAIL_RESPONSE.to_string(),
+            id: envelope.id,
+            payload: serde_json::to_value(&resp).unwrap_or_default(),
+        };
+        if let Err(e) = router.send_to(&from, response).await {
+            tracing::warn!(peer = %from, "Failed to send AdminVersionDetailResponse: {}", e);
+        }
+    }
+
+    async fn handle_admin_cleanup_versions(
+        &mut self,
+        envelope: Envelope,
+        router: &std::sync::Arc<IpcRouter>,
+    ) {
+        let from = envelope.from.clone();
+        let req: messages::AdminCleanupVersionsRequest =
+            match serde_json::from_value(envelope.payload.clone()) {
+                Ok(r) => r,
+                Err(e) => {
+                    tracing::warn!(peer = %from, "Invalid AdminCleanupVersionsRequest: {}", e);
+                    return;
+                }
+            };
+
+        let (removed, error) = match self.version_manager.cleanup_old_versions(req.keep) {
+            Ok(r) => (r, None),
+            Err(e) => (Vec::new(), Some(e)),
+        };
+
+        let resp = messages::AdminCleanupVersionsResponse { removed, error };
+        let response = Envelope {
+            from: "boot".to_string(),
+            to: from.clone(),
+            msg_type: msg_types::ADMIN_CLEANUP_VERSIONS_RESPONSE.to_string(),
+            id: envelope.id,
+            payload: serde_json::to_value(&resp).unwrap_or_default(),
+        };
+        if let Err(e) = router.send_to(&from, response).await {
+            tracing::warn!(peer = %from, "Failed to send AdminCleanupVersionsResponse: {}", e);
+        }
+    }
+
+    async fn handle_admin_force_rollback(
+        &mut self,
+        envelope: Envelope,
+        router: &std::sync::Arc<IpcRouter>,
+    ) {
+        let from = envelope.from.clone();
+        let req: messages::AdminForceRollbackRequest =
+            match serde_json::from_value(envelope.payload.clone()) {
+                Ok(r) => r,
+                Err(e) => {
+                    tracing::warn!(peer = %from, "Invalid AdminForceRollbackRequest: {}", e);
+                    return;
+                }
+            };
+
+        tracing::warn!(requested_by = %from, reason = %req.reason, "Admin-initiated rollback");
+
+        let result = if let Some(target) = &req.to_version {
+            self.version_manager.switch_to(target).map(|_| target.clone())
+        } else {
+            self.version_manager.rollback()
+        };
+
+        let resp = match result {
+            Ok(v) => {
+                self.send_audit(
+                    router,
+                    "admin_force_rollback",
+                    Some(&v),
+                    serde_json::json!({ "reason": req.reason, "requested_by": from }),
+                )
+                .await;
+                messages::AdminForceRollbackResponse {
+                    success: true,
+                    rolled_back_to: Some(v),
+                    error: None,
+                }
+            }
+            Err(e) => messages::AdminForceRollbackResponse {
+                success: false,
+                rolled_back_to: None,
+                error: Some(e),
+            },
+        };
+
+        let response = Envelope {
+            from: "boot".to_string(),
+            to: from.clone(),
+            msg_type: msg_types::ADMIN_FORCE_ROLLBACK_RESPONSE.to_string(),
+            id: envelope.id,
+            payload: serde_json::to_value(&resp).unwrap_or_default(),
+        };
+        if let Err(e) = router.send_to(&from, response).await {
+            tracing::warn!(peer = %from, "Failed to send AdminForceRollbackResponse: {}", e);
+        }
+    }
+
+    async fn handle_admin_lease_status(
+        &self,
+        envelope: Envelope,
+        router: &std::sync::Arc<IpcRouter>,
+    ) {
+        let from = envelope.from.clone();
+
+        let leases: Vec<messages::PeerLeaseInfo> = self
+            .lease_manager
+            .all_lease_info()
+            .into_iter()
+            .map(|(identity, probation, health)| messages::PeerLeaseInfo {
+                identity,
+                status: "registered".to_string(),
+                probation,
+                last_health: health,
+            })
+            .collect();
+
+        let resp = messages::AdminLeaseStatusResponse { leases };
+        let response = Envelope {
+            from: "boot".to_string(),
+            to: from.clone(),
+            msg_type: msg_types::ADMIN_LEASE_STATUS_RESPONSE.to_string(),
+            id: envelope.id,
+            payload: serde_json::to_value(&resp).unwrap_or_default(),
+        };
+        if let Err(e) = router.send_to(&from, response).await {
+            tracing::warn!(peer = %from, "Failed to send AdminLeaseStatusResponse: {}", e);
+        }
+    }
+
+    async fn handle_admin_unlock_version(
+        &mut self,
+        envelope: Envelope,
+        router: &std::sync::Arc<IpcRouter>,
+    ) {
+        let from = envelope.from.clone();
+        let was_locked = self.version_manager.unlock();
+
+        self.send_audit(
+            router,
+            "admin_unlock_version",
+            None,
+            serde_json::json!({ "was_locked": was_locked, "requested_by": from }),
+        )
+        .await;
+
+        let resp = messages::AdminUnlockVersionResponse {
+            success: true,
+            was_locked,
+        };
+        let response = Envelope {
+            from: "boot".to_string(),
+            to: from.clone(),
+            msg_type: msg_types::ADMIN_UNLOCK_VERSION_RESPONSE.to_string(),
+            id: envelope.id,
+            payload: serde_json::to_value(&resp).unwrap_or_default(),
+        };
+        if let Err(e) = router.send_to(&from, response).await {
+            tracing::warn!(peer = %from, "Failed to send AdminUnlockVersionResponse: {}", e);
+        }
+    }
+
+    async fn handle_admin_audit_query(
+        &self,
+        envelope: Envelope,
+        router: &std::sync::Arc<IpcRouter>,
+    ) {
+        let from = envelope.from.clone();
+
+        let resp = messages::AdminAuditQueryResponse {
+            entries: Vec::new(),
+            error: Some("Audit query requires audit service to be connected".to_string()),
+        };
+
+        let response = Envelope {
+            from: "boot".to_string(),
+            to: from.clone(),
+            msg_type: msg_types::ADMIN_AUDIT_QUERY_RESPONSE.to_string(),
+            id: envelope.id,
+            payload: serde_json::to_value(&resp).unwrap_or_default(),
+        };
+        if let Err(e) = router.send_to(&from, response).await {
+            tracing::warn!(peer = %from, "Failed to send AdminAuditQueryResponse: {}", e);
+        }
     }
 }

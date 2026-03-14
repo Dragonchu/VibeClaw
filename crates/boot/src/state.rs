@@ -75,6 +75,12 @@ impl StateStore {
         self.cache.get(key)
     }
 
+    pub fn list_keys(&self) -> Vec<String> {
+        let mut keys: Vec<String> = self.cache.keys().cloned().collect();
+        keys.sort();
+        keys
+    }
+
     pub fn set(
         &mut self,
         key: &str,
