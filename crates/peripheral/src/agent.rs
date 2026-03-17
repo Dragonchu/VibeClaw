@@ -1,4 +1,6 @@
-use crate::deepseek::{ChatMessage, DeepSeekClient};
+use tokio::sync::mpsc;
+
+use crate::deepseek::{ChatMessage, DeepSeekClient, StreamEvent};
 use crate::source::SourceManager;
 use crate::tools::{self, ToolResult};
 
@@ -18,15 +20,28 @@ const SYSTEM_PROMPT: &str = r#"You are Loopy, a self-evolving AI agent written i
 - After writing all modified files, call submit_update() to deploy
 "#;
 
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(tag = "type", content = "data")]
+pub enum AgentEvent {
+    Reasoning(String),
+    Content(String),
+    ToolCallStart { id: String, name: String },
+    ToolCallArgDelta(String),
+    ToolResult { name: String, output: String },
+    SubmitUpdate { source_path: String },
+    Error(String),
+    Done,
+}
+
+pub enum AgentOutcome {
+    Done,
+    SubmitUpdate(String),
+}
+
 pub struct Agent {
     deepseek: DeepSeekClient,
     source: SourceManager,
     conversation: Vec<ChatMessage>,
-}
-
-pub enum AgentOutput {
-    Done,
-    SubmitUpdate(String),
 }
 
 impl Agent {
@@ -42,23 +57,44 @@ impl Agent {
         &mut self.source
     }
 
-    pub async fn handle_input(&mut self, user_input: &str) -> Result<AgentOutput, String> {
+    pub async fn handle_input_stream(
+        &mut self,
+        user_input: &str,
+        event_tx: mpsc::Sender<AgentEvent>,
+    ) -> Result<AgentOutcome, String> {
         self.conversation.push(ChatMessage::user(user_input));
         let tool_defs = tools::tool_definitions();
 
         loop {
-            let response = self
+            let (stream_tx, mut stream_rx) = mpsc::channel::<StreamEvent>(256);
+
+            let messages = self.conversation.clone();
+            let tools_ref = tool_defs.as_slice();
+
+            let chat_handle = self
                 .deepseek
-                .chat(&self.conversation, Some(&tool_defs))
-                .await?;
+                .chat_stream(&messages, Some(tools_ref), stream_tx);
 
-            let choice = response
-                .choices
-                .into_iter()
-                .next()
-                .ok_or("Empty response from DeepSeek")?;
+            let event_tx_clone = event_tx.clone();
+            let forward_handle = tokio::spawn(async move {
+                while let Some(ev) = stream_rx.recv().await {
+                    let agent_ev = match ev {
+                        StreamEvent::Reasoning(s) => AgentEvent::Reasoning(s),
+                        StreamEvent::Content(s) => AgentEvent::Content(s),
+                        StreamEvent::ToolCallStart { id, name } => {
+                            AgentEvent::ToolCallStart { id, name }
+                        }
+                        StreamEvent::ToolCallArgDelta(s) => AgentEvent::ToolCallArgDelta(s),
+                        StreamEvent::Done | StreamEvent::Error(_) => continue,
+                    };
+                    if event_tx_clone.send(agent_ev).await.is_err() {
+                        break;
+                    }
+                }
+            });
 
-            let message = choice.message;
+            let message = chat_handle.await?;
+            let _ = forward_handle.await;
 
             if let Some(ref tool_calls) = message.tool_calls {
                 self.conversation.push(message.clone());
@@ -76,10 +112,20 @@ impl Agent {
 
                     match result {
                         ToolResult::Output(output) => {
-                            println!("  [{}] {}", tc.function.name, truncate(&output, 200));
+                            let _ = event_tx
+                                .send(AgentEvent::ToolResult {
+                                    name: tc.function.name.clone(),
+                                    output: truncate(&output, 500),
+                                })
+                                .await;
                             self.conversation.push(ChatMessage::tool(&output, &tc.id));
                         }
                         ToolResult::SubmitUpdate(path) => {
+                            let _ = event_tx
+                                .send(AgentEvent::SubmitUpdate {
+                                    source_path: path.clone(),
+                                })
+                                .await;
                             self.conversation.push(ChatMessage::tool(
                                 "Update packaged and ready for submission.",
                                 &tc.id,
@@ -90,20 +136,19 @@ impl Agent {
                 }
 
                 if let Some(path) = submit_path {
-                    return Ok(AgentOutput::SubmitUpdate(path));
+                    let _ = event_tx.send(AgentEvent::Done).await;
+                    return Ok(AgentOutcome::SubmitUpdate(path));
                 }
             } else {
                 let text = message.content.unwrap_or_default();
-                if !text.is_empty() {
-                    println!("{}", text);
-                }
                 self.conversation.push(ChatMessage {
                     role: "assistant".to_string(),
                     content: Some(text),
                     tool_calls: None,
                     tool_call_id: None,
                 });
-                return Ok(AgentOutput::Done);
+                let _ = event_tx.send(AgentEvent::Done).await;
+                return Ok(AgentOutcome::Done);
             }
         }
     }

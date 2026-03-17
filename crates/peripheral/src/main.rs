@@ -4,19 +4,23 @@ mod ipc_client;
 mod migration;
 mod source;
 mod tools;
+mod web;
 
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 
-use tokio::io::{AsyncBufReadExt, BufReader};
-use tokio::sync::mpsc;
+use tokio::sync::{Mutex, mpsc};
 
-use loopy_ipc::messages::{msg_types, Envelope};
+use loopy_ipc::messages::{Envelope, msg_types};
 
-use crate::agent::{Agent, AgentOutput};
+use crate::agent::Agent;
 use crate::deepseek::DeepSeekClient;
 use crate::ipc_client::IpcHandle;
 use crate::source::SourceManager;
+use crate::web::AppState;
+
+const DEFAULT_HTTP_PORT: u16 = 7700;
 
 struct Config {
     sock_path: PathBuf,
@@ -25,6 +29,7 @@ struct Config {
     api_key: String,
     api_base_url: Option<String>,
     model: Option<String>,
+    http_port: u16,
 }
 
 impl Config {
@@ -41,10 +46,16 @@ impl Config {
 
         let workspace_root = resolve_workspace_root(&base_dir)?;
 
-        let api_key = std::env::var("DEEPSEEK_API_KEY").or_else(|_| read_config_api_key(&base_dir))?;
+        let api_key =
+            std::env::var("DEEPSEEK_API_KEY").or_else(|_| read_config_api_key(&base_dir))?;
 
         let api_base_url = std::env::var("DEEPSEEK_BASE_URL").ok();
         let model = std::env::var("DEEPSEEK_MODEL").ok();
+
+        let http_port = std::env::var("LOOPY_HTTP_PORT")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(DEFAULT_HTTP_PORT);
 
         Ok(Self {
             sock_path,
@@ -53,6 +64,7 @@ impl Config {
             api_key,
             api_base_url,
             model,
+            http_port,
         })
     }
 }
@@ -69,10 +81,7 @@ fn resolve_workspace_root(base_dir: &PathBuf) -> Result<PathBuf, String> {
         ));
     }
 
-    let evolved_source = base_dir
-        .join("peripheral")
-        .join("current")
-        .join("source");
+    let evolved_source = base_dir.join("peripheral").join("current").join("source");
     if evolved_source.join("crates").join("peripheral").exists() {
         return Ok(evolved_source);
     }
@@ -109,7 +118,7 @@ async fn main() {
     let config = match Config::from_env() {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("Configuration error: {}", e);
+            tracing::error!("Configuration error: {}", e);
             std::process::exit(1);
         }
     };
@@ -117,14 +126,14 @@ async fn main() {
     tracing::info!(
         workspace = %config.workspace_root.display(),
         sock = %config.sock_path.display(),
+        http_port = config.http_port,
         "loopy-peripheral starting"
     );
 
     let ipc = match ipc_client::connect_and_handshake(&config.sock_path).await {
         Ok(handle) => handle,
         Err(e) => {
-            eprintln!("Failed to connect to Boot: {}", e);
-            eprintln!("Make sure loopy-boot is running.");
+            tracing::error!("Failed to connect to Boot: {}", e);
             std::process::exit(1);
         }
     };
@@ -133,15 +142,14 @@ async fn main() {
     let source = SourceManager::new(config.workspace_root);
     let agent = Agent::new(deepseek, source);
 
-    run_main_loop(agent, ipc, config.heartbeat_interval).await;
+    run(agent, ipc, config.heartbeat_interval, config.http_port).await;
 }
 
-async fn run_main_loop(mut agent: Agent, ipc: IpcHandle, heartbeat_interval: Duration) {
+async fn run(agent: Agent, ipc: IpcHandle, heartbeat_interval: Duration, http_port: u16) {
     let ipc_tx = ipc.tx;
-    let ipc_rx = ipc.rx;
     let runlevel = ipc.runlevel;
 
-    let heartbeat_tx: mpsc::Sender<Envelope> = ipc_tx.clone();
+    let heartbeat_tx = ipc_tx.clone();
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(heartbeat_interval);
         loop {
@@ -153,10 +161,12 @@ async fn run_main_loop(mut agent: Agent, ipc: IpcHandle, heartbeat_interval: Dur
         }
     });
 
-    let (update_result_tx, mut update_result_rx) = mpsc::channel::<Envelope>(4);
+    let (update_result_tx, update_result_rx) = mpsc::channel::<Envelope>(4);
+    let shutdown_notify = Arc::new(tokio::sync::Notify::new());
 
-    let message_tx: mpsc::Sender<Envelope> = update_result_tx.clone();
-    let mut ipc_rx = ipc_rx;
+    let shutdown_for_ipc = shutdown_notify.clone();
+    let message_tx = update_result_tx.clone();
+    let mut ipc_rx = ipc.rx;
     tokio::spawn(async move {
         while let Some(envelope) = ipc_rx.recv().await {
             match envelope.msg_type.as_str() {
@@ -164,15 +174,14 @@ async fn run_main_loop(mut agent: Agent, ipc: IpcHandle, heartbeat_interval: Dur
                     tracing::trace!("LeaseAck received");
                 }
                 msg_types::SHUTDOWN => {
-                    let reason = envelope.payload.get("reason")
+                    let reason = envelope
+                        .payload
+                        .get("reason")
                         .and_then(|v: &serde_json::Value| v.as_str())
                         .unwrap_or("unknown");
-                    tracing::info!(
-                        %reason,
-                        "Shutdown received"
-                    );
-                    println!("\n[system] Shutdown received. Exiting...");
+                    tracing::info!(%reason, "Shutdown received");
                     let _ = message_tx.send(envelope).await;
+                    shutdown_for_ipc.notify_waiters();
                     break;
                 }
                 msg_types::RUNLEVEL_CHANGE => {
@@ -188,122 +197,31 @@ async fn run_main_loop(mut agent: Agent, ipc: IpcHandle, heartbeat_interval: Dur
         }
     });
 
-    println!("Loopy Agent ready. Type your instructions or 'quit' to exit.");
-    println!("---");
+    let app_state = Arc::new(AppState {
+        agent: Mutex::new(agent),
+        ipc_tx,
+        update_result_rx: Mutex::new(update_result_rx),
+    });
 
-    let stdin = BufReader::new(tokio::io::stdin());
-    let mut lines = stdin.lines();
+    let router = web::build_router(app_state);
 
-    loop {
-        eprint!("loopy> ");
-
-        tokio::select! {
-            biased;
-
-            Some(result_msg) = update_result_rx.recv() => {
-                if result_msg.msg_type == msg_types::SHUTDOWN {
-                    break;
-                }
-                handle_update_result(&result_msg);
-            }
-
-            result = lines.next_line() => {
-                match result {
-                    Ok(Some(line)) => {
-                        let trimmed = line.trim();
-                        if trimmed.is_empty() {
-                            continue;
-                        }
-                        if trimmed == "quit" || trimmed == "exit" {
-                            println!("Goodbye.");
-                            break;
-                        }
-                        if trimmed == "reset" {
-                            agent.reset_conversation();
-                            println!("[system] Conversation reset.");
-                            continue;
-                        }
-
-                        match agent.handle_input(trimmed).await {
-                            Ok(AgentOutput::Done) => {}
-                            Ok(AgentOutput::SubmitUpdate(source_path)) => {
-                                println!("[system] Submitting update...");
-                                let submit = ipc_client::make_submit_update(&source_path);
-                                if ipc_tx.send(submit).await.is_err() {
-                                    println!("[error] Lost connection to Boot");
-                                    break;
-                                }
-
-                                println!("[system] Waiting for build result...");
-                                match tokio::time::timeout(
-                                    Duration::from_secs(300),
-                                    update_result_rx.recv(),
-                                )
-                                .await
-                                {
-                                    Ok(Some(msg)) => {
-                                        handle_update_result(&msg);
-                                        if msg.msg_type == msg_types::SHUTDOWN {
-                                            println!("[system] Hot replacement in progress. Shutting down...");
-                                            break;
-                                        }
-                                    }
-                                    Ok(None) => {
-                                        println!("[error] IPC channel closed");
-                                        break;
-                                    }
-                                    Err(_) => {
-                                        println!("[error] Timed out waiting for build result");
-                                    }
-                                }
-
-                                agent.source_mut().reset_staging();
-                            }
-                            Err(e) => {
-                                println!("[error] {}", e);
-                            }
-                        }
-                    }
-                    Ok(None) => {
-                        println!("\n[system] EOF on stdin. Exiting...");
-                        break;
-                    }
-                    Err(e) => {
-                        println!("[error] stdin read error: {}", e);
-                        break;
-                    }
-                }
-            }
+    let addr = std::net::SocketAddr::from(([0, 0, 0, 0], http_port));
+    let listener = match tokio::net::TcpListener::bind(addr).await {
+        Ok(l) => l,
+        Err(e) => {
+            tracing::error!("Failed to bind HTTP on {}: {}", addr, e);
+            std::process::exit(1);
         }
-    }
-}
+    };
 
-fn handle_update_result(envelope: &Envelope) {
-    match envelope.msg_type.as_str() {
-        msg_types::UPDATE_ACCEPTED => {
-            let version = envelope
-                .payload
-                .get("version")
-                .and_then(|v| v.as_str())
-                .unwrap_or("unknown");
-            println!("[system] Update ACCEPTED — version {} deployed", version);
-        }
-        msg_types::UPDATE_REJECTED => {
-            let reason = envelope
-                .payload
-                .get("reason")
-                .and_then(|v| v.as_str())
-                .unwrap_or("unknown");
-            let errors = envelope
-                .payload
-                .get("errors")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
-            println!("[system] Update REJECTED — {}", reason);
-            if !errors.is_empty() {
-                println!("[errors] {}", errors);
-            }
-        }
-        _ => {}
-    }
+    tracing::info!("HTTP server listening on http://{}", addr);
+
+    let shutdown = shutdown_notify.clone();
+    axum::serve(listener, router)
+        .with_graceful_shutdown(async move {
+            shutdown.notified().await;
+            tracing::info!("Graceful shutdown initiated");
+        })
+        .await
+        .unwrap_or_else(|e| tracing::error!("HTTP server error: {}", e));
 }

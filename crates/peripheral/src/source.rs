@@ -102,8 +102,7 @@ impl SourceManager {
             .unwrap_or_default()
             .as_millis();
         let staging = base.join(format!("stage-{}", ts));
-        fs::create_dir_all(&staging)
-            .map_err(|e| format!("Failed to create staging dir: {}", e))?;
+        fs::create_dir_all(&staging).map_err(|e| format!("Failed to create staging dir: {}", e))?;
 
         copy_workspace_skeleton(&self.workspace_root, &staging)?;
         self.staging_dir = Some(staging);
@@ -161,7 +160,9 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-reqwest = { version = "0.12", features = ["json"] }
+reqwest = { version = "0.12", features = ["json", "stream"] }
+axum = "0.8"
+tokio-stream = "0.1"
 loopy-ipc = { path = "crates/ipc" }
 "#;
 
@@ -187,11 +188,7 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
-fn collect_files_recursive(
-    dir: &Path,
-    base: &Path,
-    out: &mut Vec<String>,
-) -> std::io::Result<()> {
+fn collect_files_recursive(dir: &Path, base: &Path, out: &mut Vec<String>) -> std::io::Result<()> {
     for entry in fs::read_dir(dir)? {
         let entry = entry?;
         let name = entry.file_name();
