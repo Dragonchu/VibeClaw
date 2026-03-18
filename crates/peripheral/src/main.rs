@@ -70,6 +70,7 @@ impl Config {
 }
 
 fn resolve_workspace_root(base_dir: &PathBuf) -> Result<PathBuf, String> {
+    // 1. Explicit override via environment variable.
     if let Ok(ws) = std::env::var("LOOPY_WORKSPACE") {
         let path = PathBuf::from(ws);
         if path.join("crates").join("peripheral").exists() {
@@ -81,13 +82,21 @@ fn resolve_workspace_root(base_dir: &PathBuf) -> Result<PathBuf, String> {
         ));
     }
 
+    // 2. Default managed workspace: ~/.loopy/workspace
+    let default_ws = base_dir.join("workspace");
+    if default_ws.join("crates").join("peripheral").exists() {
+        return Ok(default_ws);
+    }
+
+    // 3. Evolved source after a hot-swap: ~/.loopy/peripheral/current/source/
     let evolved_source = base_dir.join("peripheral").join("current").join("source");
     if evolved_source.join("crates").join("peripheral").exists() {
         return Ok(evolved_source);
     }
 
     Err(
-        "Cannot determine workspace root. Set LOOPY_WORKSPACE env var or ensure ~/.loopy/peripheral/current/source/ exists."
+        "Cannot determine workspace root. Set LOOPY_WORKSPACE env var, \
+         populate ~/.loopy/workspace, or ensure ~/.loopy/peripheral/current/source/ exists."
             .to_string(),
     )
 }

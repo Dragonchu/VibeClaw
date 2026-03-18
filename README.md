@@ -27,37 +27,48 @@ Prompt → agent edits source → compiler builds candidate → judge/policy val
 
 If you believe personal AI should be **owned, inspectable, and evolvable at the source level**, this repo is for you.
 
-## Install
+## Install & start (one command)
 
 ```bash
 git clone https://github.com/Dragonchu/VibeClaw.git
 cd VibeClaw
+DEEPSEEK_API_KEY=your_key_here ./start.sh
+```
+
+`start.sh` builds the workspace in release mode, then launches **Boot → Compiler → Peripheral** in the correct order. Open <http://127.0.0.1:7700> when you see the ➜ prompt.
+
+> No API key yet? Run `./start.sh` without one — Boot and the compiler still start so you can explore the architecture.
+
+<details>
+<summary>Manual step-by-step startup</summary>
+
+### 1) Build
+
+```bash
 cargo build
 ```
 
-> Full self-evolution requires a `DEEPSEEK_API_KEY`. The Boot microkernel, compiler service, and admin tooling can still be explored without it.
-
-## Quick start
-
-### 1) Start the microkernel
+### 2) Start the microkernel
 
 ```bash
 RUST_LOG=info cargo run --bin loopy-boot
 ```
 
-### 2) Start the compiler service in another terminal
+### 3) Start the compiler service in another terminal
 
 ```bash
 cargo run --bin loopy-compiler
 ```
 
-### 3) Start the self-evolving peripheral agent
+### 4) Start the self-evolving peripheral agent
 
 ```bash
 LOOPY_WORKSPACE=$PWD DEEPSEEK_API_KEY=your_key_here cargo run --bin loopy-peripheral
 ```
 
 Then open <http://127.0.0.1:7700>.
+
+</details>
 
 ### Minimal runnable example
 
