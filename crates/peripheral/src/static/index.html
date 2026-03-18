@@ -55,6 +55,8 @@
         flex: 1;
         overflow-y: auto;
         padding: 24px 0 16px;
+        position: relative;
+        scroll-behavior: smooth;
       }
 
       .msg-container {
@@ -106,14 +108,16 @@
         color: #0d0d0d;
       }
 
+      /* Reasoning block - subtle thinking indicator */
       .reasoning-block {
         background: #f9f9fa;
-        border-left: 3px solid #d0d0d0;
-        padding: 8px 12px;
-        margin: 8px 0;
+        border-left: 3px solid #c8c8cc;
+        padding: 0;
+        margin: 10px 0;
         border-radius: 0 8px 8px 0;
         font-size: 13px;
         color: #666;
+        overflow: hidden;
       }
 
       .reasoning-block summary {
@@ -121,49 +125,111 @@
         font-size: 12px;
         font-weight: 500;
         letter-spacing: 0.3px;
-        color: #999;
-        margin-bottom: 4px;
+        color: #888;
+        padding: 8px 12px;
         user-select: none;
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        list-style: none;
+        transition: color 0.15s, background 0.15s;
+      }
+
+      .reasoning-block summary::-webkit-details-marker {
+        display: none;
       }
 
       .reasoning-block summary:hover {
+        color: #555;
+        background: #f0f0f2;
+      }
+
+      .reasoning-block summary .chevron {
+        font-size: 10px;
+        transition: transform 0.2s;
+        flex-shrink: 0;
+      }
+
+      .reasoning-block[open] summary .chevron {
+        transform: rotate(90deg);
+      }
+
+      .reasoning-block summary .thinking-icon {
+        font-size: 13px;
+        flex-shrink: 0;
+      }
+
+      .reasoning-block .reasoning-content {
+        padding: 0 12px 10px;
+        white-space: pre-wrap;
+        word-break: break-word;
+        line-height: 1.6;
+        max-height: 400px;
+        overflow-y: auto;
+      }
+
+      .reasoning-block.active summary {
         color: #666;
       }
 
+      .reasoning-block.active summary .thinking-icon {
+        animation: pulse 1.5s ease-in-out infinite;
+      }
+
+      @keyframes pulse {
+        0%, 100% { opacity: 1; }
+        50% { opacity: 0.4; }
+      }
+
+      /* Tool block - inline card style */
       .tool-block {
-        background: #f7f7f8;
+        background: #ffffff;
         border: 1px solid #e5e5e5;
         border-radius: 10px;
-        margin: 8px 0;
+        margin: 10px 0;
         font-size: 13px;
         color: #333;
+        transition: border-color 0.15s;
+      }
+
+      .tool-block:hover {
+        border-color: #d0d0d0;
       }
 
       .tool-block summary {
         cursor: pointer;
         display: flex;
         align-items: center;
-        gap: 6px;
-        padding: 8px 14px;
+        gap: 8px;
+        padding: 10px 14px;
         font-size: 13px;
         user-select: none;
         list-style: none;
+        transition: background 0.15s;
+        border-radius: 10px;
+      }
+
+      .tool-block summary:hover {
+        background: #fafafa;
       }
 
       .tool-block summary::-webkit-details-marker {
         display: none;
       }
 
-      .tool-block summary::before {
-        content: '▶';
+      .tool-block summary .chevron {
         font-size: 10px;
         color: #999;
-        transition: transform 0.15s;
+        transition: transform 0.2s;
         flex-shrink: 0;
       }
 
-      .tool-block[open] summary::before {
+      .tool-block[open] summary .chevron {
         transform: rotate(90deg);
+      }
+
+      .tool-block[open] summary {
+        border-radius: 10px 10px 0 0;
       }
 
       .tool-block .tool-icon {
@@ -182,6 +248,13 @@
         font-size: 12px;
         color: #999;
         flex-shrink: 0;
+        display: flex;
+        align-items: center;
+        gap: 4px;
+      }
+
+      .tool-block .tool-status .status-done {
+        color: #16a34a;
       }
 
       .tool-block .tool-status .spinner {
@@ -189,7 +262,7 @@
       }
 
       .tool-block .tool-content {
-        padding: 0 14px 10px;
+        padding: 0 14px 12px;
         border-top: 1px solid #e5e5e5;
       }
 
@@ -202,6 +275,15 @@
         font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
         max-height: 300px;
         overflow-y: auto;
+        background: #f9f9fa;
+        padding: 10px 12px;
+        border-radius: 6px;
+        line-height: 1.5;
+      }
+
+      .tool-block.running {
+        border-color: #d0d0ff;
+        background: #fafaff;
       }
 
       .error-block {
@@ -325,6 +407,41 @@
         font-size: 14px;
         color: #888;
       }
+
+      /* Scroll-to-bottom floating button */
+      #scroll-bottom-btn {
+        position: fixed;
+        bottom: 100px;
+        left: 50%;
+        transform: translateX(-50%);
+        background: #0d0d0d;
+        color: #ffffff;
+        border: none;
+        border-radius: 20px;
+        padding: 8px 16px;
+        font-size: 12px;
+        font-weight: 500;
+        cursor: pointer;
+        display: none;
+        align-items: center;
+        gap: 6px;
+        box-shadow: 0 2px 12px rgba(0, 0, 0, 0.15);
+        z-index: 100;
+        transition: opacity 0.2s, transform 0.2s;
+      }
+
+      #scroll-bottom-btn:hover {
+        background: #333;
+      }
+
+      #scroll-bottom-btn svg {
+        width: 14px;
+        height: 14px;
+      }
+
+      #scroll-bottom-btn.visible {
+        display: flex;
+      }
     </style>
   </head>
   <body>
@@ -341,6 +458,14 @@
         </div>
       </div>
     </div>
+
+    <button id="scroll-bottom-btn" aria-label="Scroll to bottom">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+        <line x1="12" y1="5" x2="12" y2="19"></line>
+        <polyline points="19 12 12 19 5 12"></polyline>
+      </svg>
+      New messages
+    </button>
 
     <div id="input-area">
       <form id="input-form">
@@ -369,6 +494,7 @@
       const messagesDiv = document.getElementById('messages');
       const welcomeEl = document.getElementById('welcome');
       const newChatBtn = document.getElementById('new-chat-btn');
+      const scrollBottomBtn = document.getElementById('scroll-bottom-btn');
 
       let streaming = false;
       let currentAssistantEl = null;
@@ -381,7 +507,22 @@
       messagesDiv.addEventListener('scroll', () => {
         const threshold = 80;
         userScrolledUp = messagesDiv.scrollHeight - messagesDiv.scrollTop - messagesDiv.clientHeight > threshold;
+        updateScrollButton();
       });
+
+      scrollBottomBtn.addEventListener('click', () => {
+        scrollToBottom(true);
+        userScrolledUp = false;
+        updateScrollButton();
+      });
+
+      function updateScrollButton() {
+        if (userScrolledUp && streaming) {
+          scrollBottomBtn.classList.add('visible');
+        } else {
+          scrollBottomBtn.classList.remove('visible');
+        }
+      }
 
       // --- localStorage persistence ---
       function loadHistory() {
@@ -439,13 +580,13 @@
         el.innerHTML = '<div class="role">Loopy</div>';
 
         if (entry.blocks) {
-          // New ordered-blocks format
+          // New ordered-blocks format — renders in chronological order
           for (const block of entry.blocks) {
             switch (block.type) {
               case 'reasoning': {
                 const details = document.createElement('details');
                 details.className = 'reasoning-block';
-                details.innerHTML = `<summary>Reasoning</summary><div class="content">${escapeHtml(block.text)}</div>`;
+                details.innerHTML = `<summary><span class="chevron">▶</span><span class="thinking-icon">💭</span> Thinking</summary><div class="reasoning-content">${escapeHtml(block.text)}</div>`;
                 el.appendChild(details);
                 break;
               }
@@ -460,7 +601,7 @@
                 const details = document.createElement('details');
                 details.className = 'tool-block';
                 details.innerHTML =
-                  `<summary><span class="tool-icon">⚡</span> <span class="tool-name">${escapeHtml(block.name)}</span> <span class="tool-status">✓</span></summary>` +
+                  `<summary><span class="chevron">▶</span><span class="tool-icon">⚡</span> <span class="tool-name">${escapeHtml(block.name)}</span> <span class="tool-status"><span class="status-done">✓</span></span></summary>` +
                   (block.output ? `<div class="tool-content"><div class="tool-output">${escapeHtml(block.output)}</div></div>` : '');
                 el.appendChild(details);
                 break;
@@ -472,7 +613,7 @@
           if (entry.reasoning) {
             const details = document.createElement('details');
             details.className = 'reasoning-block';
-            details.innerHTML = `<summary>Reasoning</summary><div class="content">${escapeHtml(entry.reasoning)}</div>`;
+            details.innerHTML = `<summary><span class="chevron">▶</span><span class="thinking-icon">💭</span> Thinking</summary><div class="reasoning-content">${escapeHtml(entry.reasoning)}</div>`;
             el.appendChild(details);
           }
 
@@ -481,7 +622,7 @@
               const details = document.createElement('details');
               details.className = 'tool-block';
               details.innerHTML =
-                `<summary><span class="tool-icon">⚡</span> <span class="tool-name">${escapeHtml(tool.name)}</span> <span class="tool-status">✓</span></summary>` +
+                `<summary><span class="chevron">▶</span><span class="tool-icon">⚡</span> <span class="tool-name">${escapeHtml(tool.name)}</span> <span class="tool-status"><span class="status-done">✓</span></span></summary>` +
                 (tool.output ? `<div class="tool-content"><div class="tool-output">${escapeHtml(tool.output)}</div></div>` : '');
               el.appendChild(details);
             }
@@ -616,18 +757,19 @@
       function ensureReasoningEl() {
         if (!currentReasoningEl) {
           currentReasoningEl = document.createElement('details');
-          currentReasoningEl.className = 'reasoning-block';
+          currentReasoningEl.className = 'reasoning-block active';
           currentReasoningEl.open = true;
           currentReasoningEl.innerHTML =
-            '<summary>Reasoning</summary><div class="content"></div>';
+            '<summary><span class="chevron">▶</span><span class="thinking-icon">💭</span> Thinking</summary><div class="reasoning-content"></div>';
           currentAssistantEl.appendChild(currentReasoningEl);
         }
-        return currentReasoningEl.querySelector('.content');
+        return currentReasoningEl.querySelector('.reasoning-content');
       }
 
       async function startStreaming(text) {
         streaming = true;
         sendBtn.disabled = true;
+        updateScrollButton();
         startAssistantMessage();
 
         try {
@@ -680,8 +822,12 @@
             break;
 
           case 'Content':
-            if (currentReasoningEl && currentReasoningEl.open) {
-              currentReasoningEl.open = false;
+            // Close and deactivate current reasoning block when content starts
+            if (currentReasoningEl) {
+              if (currentReasoningEl.open) {
+                currentReasoningEl.open = false;
+              }
+              currentReasoningEl.classList.remove('active');
             }
             ensureContentEl().textContent += event.data;
             hasContent = true;
@@ -689,13 +835,20 @@
             break;
 
           case 'ToolCallStart': {
+            // Close and deactivate current reasoning block
+            if (currentReasoningEl) {
+              currentReasoningEl.classList.remove('active');
+              if (currentReasoningEl.open) {
+                currentReasoningEl.open = false;
+              }
+            }
             // Reset so subsequent content/reasoning appears after this tool block
             currentContentEl = null;
             currentReasoningEl = null;
             const details = document.createElement('details');
-            details.className = 'tool-block';
+            details.className = 'tool-block running';
             details.innerHTML =
-              `<summary><span class="tool-icon">⚡</span> <span class="tool-name">${escapeHtml(event.data.name)}</span> <span class="tool-status"><span class="spinner"></span></span></summary>` +
+              `<summary><span class="chevron">▶</span><span class="tool-icon">⚡</span> <span class="tool-name">${escapeHtml(event.data.name)}</span> <span class="tool-status"><span class="spinner"></span></span></summary>` +
               `<div class="tool-content"></div>`;
             currentAssistantEl.appendChild(details);
             currentToolEl = details;
@@ -722,8 +875,9 @@
             currentReasoningEl = null;
             if (currentToolEl) {
               // Update existing tool block from ToolCallStart
+              currentToolEl.classList.remove('running');
               const statusEl = currentToolEl.querySelector('.tool-status');
-              if (statusEl) statusEl.textContent = '✓';
+              if (statusEl) statusEl.innerHTML = '<span class="status-done">✓</span>';
               const contentEl = currentToolEl.querySelector('.tool-content');
               if (contentEl) {
                 contentEl.innerHTML = '';
@@ -738,7 +892,7 @@
               const details = document.createElement('details');
               details.className = 'tool-block';
               details.innerHTML =
-                `<summary><span class="tool-icon">⚡</span> <span class="tool-name">${escapeHtml(event.data.name)}</span> <span class="tool-status">✓</span></summary>` +
+                `<summary><span class="chevron">▶</span><span class="tool-icon">⚡</span> <span class="tool-name">${escapeHtml(event.data.name)}</span> <span class="tool-status"><span class="status-done">✓</span></span></summary>` +
                 `<div class="tool-content"><div class="tool-output">${escapeHtml(event.data.output)}</div></div>`;
               currentAssistantEl.appendChild(details);
             }
@@ -747,12 +901,15 @@
           }
 
           case 'SubmitUpdate': {
+            if (currentReasoningEl) {
+              currentReasoningEl.classList.remove('active');
+            }
             currentContentEl = null;
             currentReasoningEl = null;
             const details = document.createElement('details');
-            details.className = 'tool-block';
+            details.className = 'tool-block running';
             details.innerHTML =
-              `<summary><span class="tool-icon">🚀</span> <span class="tool-name">submit_update</span> <span class="tool-status"><span class="spinner"></span></span></summary>` +
+              `<summary><span class="chevron">▶</span><span class="tool-icon">🚀</span> <span class="tool-name">submit_update</span> <span class="tool-status"><span class="spinner"></span></span></summary>` +
               `<div class="tool-content"><div class="tool-output">Submitting changes for compilation...</div></div>`;
             currentAssistantEl.appendChild(details);
             appendToBlock('tool', { name: 'submit_update', output: 'Submitting changes for compilation...' });
@@ -778,14 +935,22 @@
         streaming = false;
         sendBtn.disabled = false;
         if (currentAssistantEl) {
-          const spinner = currentAssistantEl.querySelector('.spinner');
+          // Remove the spinner from the role label
+          const spinner = currentAssistantEl.querySelector('.role > .spinner');
           if (spinner) spinner.remove();
+          // Deactivate any remaining active reasoning block
+          const activeReasoning = currentAssistantEl.querySelector('.reasoning-block.active');
+          if (activeReasoning) activeReasoning.classList.remove('active');
+          // Remove running state from any tool blocks
+          const runningTools = currentAssistantEl.querySelectorAll('.tool-block.running');
+          runningTools.forEach(el => el.classList.remove('running'));
         }
         savePendingAssistant();
         currentAssistantEl = null;
         currentContentEl = null;
         currentReasoningEl = null;
         currentToolEl = null;
+        updateScrollButton();
         input.focus();
       }
 
