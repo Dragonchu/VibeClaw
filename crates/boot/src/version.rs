@@ -565,13 +565,72 @@ mod tests {
             .unwrap();
         assert!(out.status.success(), "main must exist after recovery");
     }
+
+    #[test]
+    fn copy_source_preserves_git_worktree() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mgr = VersionManager::new(tmp.path());
+
+        let info = mgr.allocate_version().expect("V1 allocation");
+
+        // The worktree's .git link file must exist after allocation.
+        let git_link = info.source_dir.join(".git");
+        assert!(git_link.exists(), ".git link must exist in worktree");
+        let link_before = fs::read_to_string(&git_link).unwrap();
+
+        // Build a fake staging directory that contains a .git directory
+        // (simulating a source that happens to include .git metadata).
+        let staging = tmp.path().join("staging");
+        fs::create_dir_all(staging.join(".git").join("objects")).unwrap();
+        fs::write(staging.join(".git").join("HEAD"), "ref: refs/heads/fake\n").unwrap();
+        fs::create_dir_all(staging.join("target").join("debug")).unwrap();
+        fs::write(staging.join("target").join("debug").join("artifact"), b"binary").unwrap();
+        fs::write(staging.join("Cargo.toml"), b"[package]\nname=\"test\"\n").unwrap();
+        fs::create_dir_all(staging.join("src")).unwrap();
+        fs::write(staging.join("src").join("main.rs"), b"fn main() {}").unwrap();
+
+        // copy_source must skip .git and target.
+        mgr.copy_source(&staging, &info.source_dir).unwrap();
+
+        // .git link file must be unchanged (not overwritten by staging's .git).
+        assert!(git_link.exists(), ".git link must still exist");
+        let link_after = fs::read_to_string(&git_link).unwrap();
+        assert_eq!(link_before, link_after, ".git worktree link must be preserved");
+
+        // target directory must NOT have been copied.
+        assert!(
+            !info.source_dir.join("target").exists(),
+            "target directory must not be copied"
+        );
+
+        // Regular files must have been copied.
+        assert!(info.source_dir.join("Cargo.toml").exists());
+        assert!(info.source_dir.join("src").join("main.rs").exists());
+
+        // Git operations must still work in the worktree.
+        let out = Command::new("git")
+            .args(["status", "--porcelain"])
+            .current_dir(&info.source_dir)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "git status must succeed in preserved worktree: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
 }
 
 fn copy_dir_recursive(src: &Path, dst: &Path) -> std::io::Result<()> {
     fs::create_dir_all(dst)?;
     for entry in fs::read_dir(src)? {
         let entry = entry?;
-        let target = dst.join(entry.file_name());
+        let name = entry.file_name();
+        // Skip .git (preserves worktree link file) and target (build artifacts).
+        if name == ".git" || name == "target" {
+            continue;
+        }
+        let target = dst.join(&name);
         if entry.file_type()?.is_dir() {
             copy_dir_recursive(&entry.path(), &target)?;
         } else {
