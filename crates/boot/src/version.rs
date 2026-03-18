@@ -168,10 +168,19 @@ impl VersionManager {
             ("user.name", "loopy-boot"),
             ("user.email", "boot@loopy.local"),
         ] {
-            let _ = Command::new("git")
+            let o = Command::new("git")
                 .args(["config", key, value])
                 .current_dir(&tmp)
-                .output();
+                .output()
+                .map_err(|e| format!("git config (tmp) failed: {}", e))?;
+            if !o.status.success() {
+                let _ = fs::remove_dir_all(&tmp);
+                return Err(format!(
+                    "git config {} (tmp) failed: {}",
+                    key,
+                    String::from_utf8_lossy(&o.stderr)
+                ));
+            }
         }
 
         let o = Command::new("git")
@@ -194,17 +203,20 @@ impl VersionManager {
             .args(["HEAD:refs/heads/main"])
             .current_dir(&tmp)
             .output()
-            .map_err(|e| format!("git push (init) failed: {}", e))?;
-
-        // Remove temp repo regardless of push outcome.
-        let _ = fs::remove_dir_all(&tmp);
+            .map_err(|e| {
+                let _ = fs::remove_dir_all(&tmp);
+                format!("git push (init) failed: {}", e)
+            })?;
 
         if !o.status.success() {
+            let _ = fs::remove_dir_all(&tmp);
             return Err(format!(
                 "git push initial commit to bare repo failed: {}",
                 String::from_utf8_lossy(&o.stderr)
             ));
         }
+
+        let _ = fs::remove_dir_all(&tmp);
 
         tracing::info!(git_dir = %self.git_dir.display(), "Git bare repo initialised");
         Ok(())
