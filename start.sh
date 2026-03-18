@@ -15,6 +15,18 @@ die()   { echo -e "${RED}[vibeclaw] ERROR:${RESET} $*" >&2; exit 1; }
 # ── pre-flight ───────────────────────────────────────────────────────────────
 command -v cargo >/dev/null 2>&1 || die "cargo not found. Install Rust from https://rustup.rs"
 
+if ! command -v git >/dev/null 2>&1; then
+    warn "git not found. Attempting to install…"
+    if command -v apt-get >/dev/null 2>&1; then
+        sudo apt-get install -y git || die "Failed to install git. Please install it manually: https://git-scm.com/downloads"
+    elif command -v brew >/dev/null 2>&1; then
+        brew install git || die "Failed to install git. Please install it manually: https://git-scm.com/downloads"
+    else
+        die "git is required but not installed. Please install it manually: https://git-scm.com/downloads"
+    fi
+    ok "git installed: $(git --version)"
+fi
+
 if [[ -z "${DEEPSEEK_API_KEY:-}" ]]; then
     warn "DEEPSEEK_API_KEY is not set."
     warn "Boot, compiler, and admin will start, but the peripheral agent will be skipped."

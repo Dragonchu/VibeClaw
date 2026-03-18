@@ -538,6 +538,10 @@ impl Microkernel {
             return;
         }
 
+        if let Err(e) = self.version_manager.commit_version_source(&version_info) {
+            tracing::warn!(version = %version_info.version, "Failed to commit source to git (non-fatal): {}", e);
+        }
+
         let compile_req = messages::CompileRequest {
             version: version_info.version.clone(),
             source_path: version_info.source_dir.to_string_lossy().to_string(),
