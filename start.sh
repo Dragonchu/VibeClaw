@@ -131,6 +131,38 @@ info "Building workspace (release)…"
 cargo build --release 2>&1 | tail -5
 ok "Build complete."
 
+# ── stop previous instances ───────────────────────────────────────────────────
+stop_existing() {
+    local found=0
+    for name in loopy-boot loopy-compiler loopy-peripheral; do
+        local pids
+        pids="$(pgrep -x "$name" 2>/dev/null || true)"
+        if [[ -n "$pids" ]]; then
+            found=1
+            info "Stopping old ${name} (pid ${pids// /, })…"
+            echo "$pids" | xargs -r kill 2>/dev/null || true
+        fi
+    done
+    if [[ "$found" -eq 1 ]]; then
+        sleep 1
+        for name in loopy-boot loopy-compiler loopy-peripheral; do
+            local pids
+            pids="$(pgrep -x "$name" 2>/dev/null || true)"
+            if [[ -n "$pids" ]]; then
+                warn "Force-killing old ${name} (pid ${pids// /, })…"
+                echo "$pids" | xargs -r kill -9 2>/dev/null || true
+            fi
+        done
+        ok "Old instances stopped."
+    fi
+    local sock="${LOOPY_SOCKET:-${LOOPY_DIR}/loopy.sock}"
+    if [[ -S "$sock" ]]; then
+        rm -f "$sock"
+        info "Removed stale socket: ${sock}"
+    fi
+}
+stop_existing
+
 # ── cleanup on exit ───────────────────────────────────────────────────────────
 PIDS=()
 cleanup() {
@@ -145,6 +177,15 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
+# ── liveness check helper ─────────────────────────────────────────────────────
+check_alive() {
+    local name="$1" pid="$2" log="$3"
+    if ! kill -0 "$pid" 2>/dev/null; then
+        echo ""
+        die "${name} exited unexpectedly. Check ${log} for details:\n$(tail -20 "${log}")"
+    fi
+}
+
 # ── loopy-boot ────────────────────────────────────────────────────────────────
 info "Starting loopy-boot…"
 RUST_LOG="${RUST_LOG:-info}" \
@@ -153,6 +194,7 @@ RUST_LOG="${RUST_LOG:-info}" \
 PIDS+=($!)
 BOOT_PID=$!
 sleep 1
+check_alive "loopy-boot" "$BOOT_PID" "${LOG_DIR}/boot.log"
 ok "loopy-boot running  (pid ${BOOT_PID}, log: .loopy/logs/boot.log)"
 
 # ── loopy-compiler ────────────────────────────────────────────────────────────
@@ -163,6 +205,7 @@ RUST_LOG="${RUST_LOG:-info}" \
 PIDS+=($!)
 COMPILER_PID=$!
 sleep 1
+check_alive "loopy-compiler" "$COMPILER_PID" "${LOG_DIR}/compiler.log"
 ok "loopy-compiler running  (pid ${COMPILER_PID}, log: .loopy/logs/compiler.log)"
 
 # ── loopy-peripheral ─────────────────────────────────────────────────────────
@@ -175,6 +218,7 @@ if [[ "${SKIP_PERIPHERAL}" -eq 0 ]]; then
     PIDS+=($!)
     PERIPHERAL_PID=$!
     sleep 2
+    check_alive "loopy-peripheral" "$PERIPHERAL_PID" "${LOG_DIR}/peripheral.log"
     ok "loopy-peripheral running  (pid ${PERIPHERAL_PID}, log: .loopy/logs/peripheral.log)"
     echo ""
     echo -e "${BOLD}  ➜  Open http://127.0.0.1:${LOOPY_HTTP_PORT:-7700}${RESET}"
