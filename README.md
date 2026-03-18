@@ -2,6 +2,10 @@
 
 [中文 README](./README.zh-CN.md)
 
+<p align="center">
+  <img src="./image.png" alt="VibeClaw — Since all claw is vibe code, why not vibe your own claw?" width="720" />
+</p>
+
 > **A source-level self-evolving agent system in Rust.**
 > VibeClaw is building **Loopy**: an AI agent that can read, rewrite, compile, test, judge, and hot-swap **its own source code** — so you do not have to wait for someone else to define your assistant.
 

@@ -2,6 +2,10 @@
 
 [English README](./README.md)
 
+<p align="center">
+  <img src="./image.png" alt="VibeClaw — Since all claw is vibe code, why not vibe your own claw?" width="720" />
+</p>
+
 > **一个 Rust 编写的源码级自进化 Agent 系统。**
 > VibeClaw 正在构建 **Loopy**：一个能够读取、改写、编译、测试、裁决并热切换**自身源码**的 AI Agent——你不需要继续等待别人来定义你的 AI 助手。
 
