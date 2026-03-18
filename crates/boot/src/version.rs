@@ -77,9 +77,35 @@ impl VersionManager {
     }
 
     /// Initialise the bare git repo at `base_dir/git/` if it does not already exist.
+    /// Also recovers from a partially initialised repo where `main` has no commits.
     fn init_git_repo_if_needed(&self) -> Result<(), String> {
         if self.git_dir.join("HEAD").exists() {
-            return Ok(());
+            // Verify `main` branch actually exists (has at least one commit).
+            // A previous init may have created the bare repo but failed before
+            // committing, leaving HEAD present but `main` as a dangling ref.
+            let check = Command::new("git")
+                .args(["rev-parse", "--verify", "refs/heads/main"])
+                .env("GIT_DIR", &self.git_dir)
+                .output();
+            match check {
+                Ok(o) if o.status.success() => return Ok(()), // Repo is healthy.
+                Ok(_) => {} // Non-zero exit — main branch missing.
+                Err(e) => {
+                    tracing::debug!("git rev-parse to verify 'main' failed to run: {}", e);
+                }
+            }
+            // Stale bare repo — remove and re-create.
+            tracing::warn!(
+                git_dir = %self.git_dir.display(),
+                "Bare repo exists but 'main' branch is missing; re-initialising"
+            );
+            fs::remove_dir_all(&self.git_dir).map_err(|e| {
+                format!(
+                    "Failed to remove stale bare repo at {}: {}",
+                    self.git_dir.display(),
+                    e
+                )
+            })?;
         }
 
         fs::create_dir_all(&self.git_dir)
@@ -137,7 +163,6 @@ impl VersionManager {
         let o = Command::new("git")
             .args(["commit", "--allow-empty", "-m", "Initial commit"])
             .current_dir(&tmp)
-            .env("GIT_DIR", self.git_dir.join(".git").as_os_str().to_os_string().to_string_lossy().as_ref())
             .output()
             .map_err(|e| format!("git commit (init) failed: {}", e))?;
 
@@ -469,11 +494,143 @@ fn chrono_now_iso() -> String {
     format!("{}s", now.as_secs())
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn allocate_v1_creates_worktree_from_main() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mgr = VersionManager::new(tmp.path());
+
+        let info = mgr.allocate_version().expect("V1 allocation should succeed");
+        assert_eq!(info.version, "V1");
+        assert!(info.source_dir.exists(), "source dir must exist");
+
+        // `main` branch must be resolvable in the bare repo.
+        let out = Command::new("git")
+            .args(["rev-parse", "--verify", "refs/heads/main"])
+            .env("GIT_DIR", &mgr.git_dir)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "main branch must exist after init");
+
+        // V1 branch must also exist.
+        let out = Command::new("git")
+            .args(["rev-parse", "--verify", "refs/heads/V1"])
+            .env("GIT_DIR", &mgr.git_dir)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "V1 branch must exist");
+    }
+
+    #[test]
+    fn allocate_v2_based_on_v1() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mgr = VersionManager::new(tmp.path());
+
+        let v1 = mgr.allocate_version().expect("V1");
+        assert_eq!(v1.version, "V1");
+
+        let v2 = mgr.allocate_version().expect("V2");
+        assert_eq!(v2.version, "V2");
+        assert!(v2.source_dir.exists());
+    }
+
+    #[test]
+    fn stale_bare_repo_is_recovered() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mgr = VersionManager::new(tmp.path());
+        mgr.ensure_dirs().unwrap();
+
+        // Create a bare repo but do NOT commit, simulating a stale init.
+        fs::create_dir_all(&mgr.git_dir).unwrap();
+        let out = Command::new("git")
+            .args(["init", "--bare"])
+            .arg(&mgr.git_dir)
+            .output()
+            .unwrap();
+        assert!(out.status.success());
+        assert!(mgr.git_dir.join("HEAD").exists(), "HEAD should exist");
+
+        // init_git_repo_if_needed should detect missing `main` and re-init.
+        mgr.init_git_repo_if_needed()
+            .expect("should recover from stale bare repo");
+
+        // Now `main` must be valid.
+        let out = Command::new("git")
+            .args(["rev-parse", "--verify", "refs/heads/main"])
+            .env("GIT_DIR", &mgr.git_dir)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "main must exist after recovery");
+    }
+
+    #[test]
+    fn copy_source_preserves_git_worktree() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mgr = VersionManager::new(tmp.path());
+
+        let info = mgr.allocate_version().expect("V1 allocation");
+
+        // The worktree's .git link file must exist after allocation.
+        let git_link = info.source_dir.join(".git");
+        assert!(git_link.exists(), ".git link must exist in worktree");
+        let link_before = fs::read_to_string(&git_link).unwrap();
+
+        // Build a fake staging directory that contains a .git directory
+        // (simulating a source that happens to include .git metadata).
+        let staging = tmp.path().join("staging");
+        fs::create_dir_all(staging.join(".git").join("objects")).unwrap();
+        fs::write(staging.join(".git").join("HEAD"), "ref: refs/heads/fake\n").unwrap();
+        fs::create_dir_all(staging.join("target").join("debug")).unwrap();
+        fs::write(staging.join("target").join("debug").join("artifact"), b"binary").unwrap();
+        fs::write(staging.join("Cargo.toml"), b"[package]\nname=\"test\"\n").unwrap();
+        fs::create_dir_all(staging.join("src")).unwrap();
+        fs::write(staging.join("src").join("main.rs"), b"fn main() {}").unwrap();
+
+        // copy_source must skip .git and target.
+        mgr.copy_source(&staging, &info.source_dir).unwrap();
+
+        // .git link file must be unchanged (not overwritten by staging's .git).
+        assert!(git_link.exists(), ".git link must still exist");
+        let link_after = fs::read_to_string(&git_link).unwrap();
+        assert_eq!(link_before, link_after, ".git worktree link must be preserved");
+
+        // target directory must NOT have been copied.
+        assert!(
+            !info.source_dir.join("target").exists(),
+            "target directory must not be copied"
+        );
+
+        // Regular files must have been copied.
+        assert!(info.source_dir.join("Cargo.toml").exists());
+        assert!(info.source_dir.join("src").join("main.rs").exists());
+
+        // Git operations must still work in the worktree.
+        let out = Command::new("git")
+            .args(["status", "--porcelain"])
+            .current_dir(&info.source_dir)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "git status must succeed in preserved worktree: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+}
+
 fn copy_dir_recursive(src: &Path, dst: &Path) -> std::io::Result<()> {
     fs::create_dir_all(dst)?;
     for entry in fs::read_dir(src)? {
         let entry = entry?;
-        let target = dst.join(entry.file_name());
+        let name = entry.file_name();
+        // Skip .git (preserves worktree link file) and target (build artifacts).
+        if name == ".git" || name == "target" {
+            continue;
+        }
+        let target = dst.join(&name);
         if entry.file_type()?.is_dir() {
             copy_dir_recursive(&entry.path(), &target)?;
         } else {
