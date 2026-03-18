@@ -103,9 +103,9 @@ impl VersionManager {
             ("user.email", "boot@loopy.local"),
         ] {
             let o = Command::new("git")
-                .args(["config", key, value])
-                .arg("--file")
+                .args(["config", "--file"])
                 .arg(self.git_dir.join("config"))
+                .args([key, value])
                 .output()
                 .map_err(|e| format!("git config failed: {}", e))?;
             if !o.status.success() {
