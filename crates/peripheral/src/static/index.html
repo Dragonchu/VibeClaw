@@ -134,11 +134,41 @@
         background: #f7f7f8;
         border: 1px solid #e5e5e5;
         border-radius: 10px;
-        padding: 10px 14px;
         margin: 8px 0;
-        font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
         font-size: 13px;
         color: #333;
+      }
+
+      .tool-block summary {
+        cursor: pointer;
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        padding: 8px 14px;
+        font-size: 13px;
+        user-select: none;
+        list-style: none;
+      }
+
+      .tool-block summary::-webkit-details-marker {
+        display: none;
+      }
+
+      .tool-block summary::before {
+        content: '▶';
+        font-size: 10px;
+        color: #999;
+        transition: transform 0.15s;
+        flex-shrink: 0;
+      }
+
+      .tool-block[open] summary::before {
+        transform: rotate(90deg);
+      }
+
+      .tool-block .tool-icon {
+        font-size: 14px;
+        flex-shrink: 0;
       }
 
       .tool-block .tool-name {
@@ -147,12 +177,31 @@
         font-size: 12px;
       }
 
+      .tool-block .tool-status {
+        margin-left: auto;
+        font-size: 12px;
+        color: #999;
+        flex-shrink: 0;
+      }
+
+      .tool-block .tool-status .spinner {
+        margin-right: 0;
+      }
+
+      .tool-block .tool-content {
+        padding: 0 14px 10px;
+        border-top: 1px solid #e5e5e5;
+      }
+
       .tool-block .tool-output {
         color: #555;
-        margin-top: 6px;
+        margin-top: 8px;
         white-space: pre-wrap;
         word-break: break-word;
         font-size: 12px;
+        font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
+        max-height: 300px;
+        overflow-y: auto;
       }
 
       .error-block {
@@ -327,6 +376,12 @@
       let currentReasoningEl = null;
       let currentToolEl = null;
       let hasContent = false;
+      let userScrolledUp = false;
+
+      messagesDiv.addEventListener('scroll', () => {
+        const threshold = 80;
+        userScrolledUp = messagesDiv.scrollHeight - messagesDiv.scrollTop - messagesDiv.clientHeight > threshold;
+      });
 
       // --- localStorage persistence ---
       function loadHistory() {
@@ -368,7 +423,7 @@
             renderAssistantMessage(entry);
           }
         }
-        scrollToBottom();
+        scrollToBottom(true);
       }
 
       function renderUserMessage(text) {
@@ -383,28 +438,61 @@
         el.className = 'msg assistant';
         el.innerHTML = '<div class="role">Loopy</div>';
 
-        if (entry.reasoning) {
-          const details = document.createElement('details');
-          details.className = 'reasoning-block';
-          details.innerHTML = `<summary>Reasoning</summary><div class="content">${escapeHtml(entry.reasoning)}</div>`;
-          el.appendChild(details);
-        }
-
-        if (entry.tools && entry.tools.length > 0) {
-          for (const tool of entry.tools) {
-            const toolEl = document.createElement('div');
-            toolEl.className = 'tool-block';
-            toolEl.innerHTML = `<span class="tool-name">${escapeHtml(tool.name)}</span>` +
-              (tool.output ? `<div class="tool-output">${escapeHtml(tool.output)}</div>` : '');
-            el.appendChild(toolEl);
+        if (entry.blocks) {
+          // New ordered-blocks format
+          for (const block of entry.blocks) {
+            switch (block.type) {
+              case 'reasoning': {
+                const details = document.createElement('details');
+                details.className = 'reasoning-block';
+                details.innerHTML = `<summary>Reasoning</summary><div class="content">${escapeHtml(block.text)}</div>`;
+                el.appendChild(details);
+                break;
+              }
+              case 'content': {
+                const contentEl = document.createElement('div');
+                contentEl.className = 'content';
+                contentEl.textContent = block.text;
+                el.appendChild(contentEl);
+                break;
+              }
+              case 'tool': {
+                const details = document.createElement('details');
+                details.className = 'tool-block';
+                details.innerHTML =
+                  `<summary><span class="tool-icon">⚡</span> <span class="tool-name">${escapeHtml(block.name)}</span> <span class="tool-status">✓</span></summary>` +
+                  (block.output ? `<div class="tool-content"><div class="tool-output">${escapeHtml(block.output)}</div></div>` : '');
+                el.appendChild(details);
+                break;
+              }
+            }
           }
-        }
+        } else {
+          // Legacy format: reasoning → tools → content
+          if (entry.reasoning) {
+            const details = document.createElement('details');
+            details.className = 'reasoning-block';
+            details.innerHTML = `<summary>Reasoning</summary><div class="content">${escapeHtml(entry.reasoning)}</div>`;
+            el.appendChild(details);
+          }
 
-        if (entry.content) {
-          const contentEl = document.createElement('div');
-          contentEl.className = 'content';
-          contentEl.textContent = entry.content;
-          el.appendChild(contentEl);
+          if (entry.tools && entry.tools.length > 0) {
+            for (const tool of entry.tools) {
+              const details = document.createElement('details');
+              details.className = 'tool-block';
+              details.innerHTML =
+                `<summary><span class="tool-icon">⚡</span> <span class="tool-name">${escapeHtml(tool.name)}</span> <span class="tool-status">✓</span></summary>` +
+                (tool.output ? `<div class="tool-content"><div class="tool-output">${escapeHtml(tool.output)}</div></div>` : '');
+              el.appendChild(details);
+            }
+          }
+
+          if (entry.content) {
+            const contentEl = document.createElement('div');
+            contentEl.className = 'content';
+            contentEl.textContent = entry.content;
+            el.appendChild(contentEl);
+          }
         }
 
         if (entry.errors && entry.errors.length > 0) {
@@ -423,11 +511,28 @@
       let pendingAssistant = null;
 
       function resetPendingAssistant() {
-        pendingAssistant = { role: 'assistant', content: '', reasoning: '', tools: [], errors: [] };
+        pendingAssistant = { role: 'assistant', blocks: [], errors: [] };
+      }
+
+      function appendToBlock(type, data) {
+        if (!pendingAssistant) return;
+        const blocks = pendingAssistant.blocks;
+        // Tool blocks are always separate entries
+        if (type === 'tool') {
+          blocks.push({ type: 'tool', name: data.name, output: data.output });
+          return;
+        }
+        // Merge consecutive text blocks of the same type (reasoning, content)
+        const last = blocks[blocks.length - 1];
+        if (last && last.type === type) {
+          last.text += data;
+        } else {
+          blocks.push({ type, text: data });
+        }
       }
 
       function savePendingAssistant() {
-        if (pendingAssistant && (pendingAssistant.content || pendingAssistant.reasoning || pendingAssistant.tools.length > 0 || pendingAssistant.errors.length > 0)) {
+        if (pendingAssistant && (pendingAssistant.blocks.length > 0 || pendingAssistant.errors.length > 0)) {
           appendToHistory(pendingAssistant);
         }
         pendingAssistant = null;
@@ -482,7 +587,7 @@
         el.className = 'msg user';
         el.innerHTML = `<div class="role">You</div><div class="content">${escapeHtml(text)}</div>`;
         msgContainer.appendChild(el);
-        scrollToBottom();
+        scrollToBottom(true);
       }
 
       function startAssistantMessage() {
@@ -496,7 +601,7 @@
         hasContent = false;
         resetPendingAssistant();
         msgContainer.appendChild(currentAssistantEl);
-        scrollToBottom();
+        scrollToBottom(true);
       }
 
       function ensureContentEl() {
@@ -571,7 +676,7 @@
         switch (event.type) {
           case 'Reasoning':
             ensureReasoningEl().textContent += event.data;
-            if (pendingAssistant) pendingAssistant.reasoning += event.data;
+            appendToBlock('reasoning', event.data);
             break;
 
           case 'Content':
@@ -580,37 +685,77 @@
             }
             ensureContentEl().textContent += event.data;
             hasContent = true;
-            if (pendingAssistant) pendingAssistant.content += event.data;
+            appendToBlock('content', event.data);
             break;
 
           case 'ToolCallStart': {
-            currentToolEl = document.createElement('div');
-            currentToolEl.className = 'tool-block';
-            currentToolEl.innerHTML = `<span class="tool-name">${escapeHtml(event.data.name)}</span>`;
-            currentAssistantEl.appendChild(currentToolEl);
+            // Reset so subsequent content/reasoning appears after this tool block
+            currentContentEl = null;
+            currentReasoningEl = null;
+            const details = document.createElement('details');
+            details.className = 'tool-block';
+            details.innerHTML =
+              `<summary><span class="tool-icon">⚡</span> <span class="tool-name">${escapeHtml(event.data.name)}</span> <span class="tool-status"><span class="spinner"></span></span></summary>` +
+              `<div class="tool-content"></div>`;
+            currentAssistantEl.appendChild(details);
+            currentToolEl = details;
             break;
           }
 
           case 'ToolCallArgDelta':
+            if (currentToolEl) {
+              const contentEl = currentToolEl.querySelector('.tool-content');
+              if (contentEl) {
+                if (!contentEl.querySelector('.tool-args')) {
+                  const argsEl = document.createElement('div');
+                  argsEl.className = 'tool-output tool-args';
+                  contentEl.appendChild(argsEl);
+                }
+                contentEl.querySelector('.tool-args').textContent += event.data;
+              }
+            }
             break;
 
           case 'ToolResult': {
-            const el = document.createElement('div');
-            el.className = 'tool-block';
-            el.innerHTML = `<span class="tool-name">${escapeHtml(event.data.name)}</span><div class="tool-output">${escapeHtml(event.data.output)}</div>`;
-            currentAssistantEl.appendChild(el);
-            currentToolEl = null;
-            if (pendingAssistant) pendingAssistant.tools.push({ name: event.data.name, output: event.data.output });
+            // Reset so subsequent content/reasoning appears after this tool block
+            currentContentEl = null;
+            currentReasoningEl = null;
+            if (currentToolEl) {
+              // Update existing tool block from ToolCallStart
+              const statusEl = currentToolEl.querySelector('.tool-status');
+              if (statusEl) statusEl.textContent = '✓';
+              const contentEl = currentToolEl.querySelector('.tool-content');
+              if (contentEl) {
+                contentEl.innerHTML = '';
+                const outputEl = document.createElement('div');
+                outputEl.className = 'tool-output';
+                outputEl.textContent = event.data.output;
+                contentEl.appendChild(outputEl);
+              }
+              currentToolEl = null;
+            } else {
+              // Standalone ToolResult without preceding ToolCallStart
+              const details = document.createElement('details');
+              details.className = 'tool-block';
+              details.innerHTML =
+                `<summary><span class="tool-icon">⚡</span> <span class="tool-name">${escapeHtml(event.data.name)}</span> <span class="tool-status">✓</span></summary>` +
+                `<div class="tool-content"><div class="tool-output">${escapeHtml(event.data.output)}</div></div>`;
+              currentAssistantEl.appendChild(details);
+            }
+            appendToBlock('tool', { name: event.data.name, output: event.data.output });
             break;
           }
 
           case 'SubmitUpdate': {
-            const el = document.createElement('div');
-            el.className = 'tool-block';
-            el.innerHTML =
-              '<span class="tool-name">submit_update</span><div class="tool-output">Submitting changes for compilation...</div>';
-            currentAssistantEl.appendChild(el);
-            if (pendingAssistant) pendingAssistant.tools.push({ name: 'submit_update', output: 'Submitting changes for compilation...' });
+            currentContentEl = null;
+            currentReasoningEl = null;
+            const details = document.createElement('details');
+            details.className = 'tool-block';
+            details.innerHTML =
+              `<summary><span class="tool-icon">🚀</span> <span class="tool-name">submit_update</span> <span class="tool-status"><span class="spinner"></span></span></summary>` +
+              `<div class="tool-content"><div class="tool-output">Submitting changes for compilation...</div></div>`;
+            currentAssistantEl.appendChild(details);
+            appendToBlock('tool', { name: 'submit_update', output: 'Submitting changes for compilation...' });
             break;
           }
 
@@ -644,8 +789,10 @@
         input.focus();
       }
 
-      function scrollToBottom() {
-        messagesDiv.scrollTop = messagesDiv.scrollHeight;
+      function scrollToBottom(force) {
+        if (force || !userScrolledUp) {
+          messagesDiv.scrollTop = messagesDiv.scrollHeight;
+        }
       }
 
       function escapeHtml(text) {
