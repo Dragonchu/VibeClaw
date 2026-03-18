@@ -270,10 +270,22 @@ impl VersionManager {
         self.init_git_repo_if_needed()?;
 
         // Prune stale worktree bookkeeping left by previously removed directories.
-        let _ = Command::new("git")
+        match Command::new("git")
             .args(["worktree", "prune"])
             .env("GIT_DIR", &self.git_dir)
-            .output();
+            .output()
+        {
+            Ok(o) if !o.status.success() => {
+                tracing::debug!(
+                    "git worktree prune failed: {}",
+                    String::from_utf8_lossy(&o.stderr)
+                );
+            }
+            Err(e) => {
+                tracing::debug!("git worktree prune could not run: {}", e);
+            }
+            _ => {}
+        }
 
         let num = self.next_version_number();
         let version = format!("V{}", num);
@@ -303,13 +315,17 @@ impl VersionManager {
             .env("GIT_DIR", &self.git_dir)
             .output()
             .map_err(|e| {
-                let _ = fs::remove_dir_all(&dir);
+                if let Err(re) = fs::remove_dir_all(&dir) {
+                    tracing::warn!(dir = %dir.display(), "Failed to clean up version dir after error: {}", re);
+                }
                 format!("git worktree add failed: {}", e)
             })?;
         if !o.status.success() {
             // Clean up the version directory so next_version_number() does not
             // see a half-created version and skip over it.
-            let _ = fs::remove_dir_all(&dir);
+            if let Err(re) = fs::remove_dir_all(&dir) {
+                tracing::warn!(dir = %dir.display(), "Failed to clean up version dir after worktree failure: {}", re);
+            }
             return Err(format!(
                 "git worktree add for {} failed: {}",
                 version,
