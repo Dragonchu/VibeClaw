@@ -144,20 +144,34 @@ impl VersionManager {
         }
 
         // Create an empty initial commit on `main` so later branches have a base.
+        // Avoid `git worktree add --orphan` which requires Git >= 2.38.
+        // Instead, use a temporary regular repo, commit there, then push into
+        // the bare repo.
         let tmp = self.base_dir.join(".git_init_tmp");
         let _ = fs::remove_dir_all(&tmp);
+
         let o = Command::new("git")
-            .args(["worktree", "add", "--orphan", "-b", "main"])
+            .args(["init", "-b", "main"])
             .arg(&tmp)
-            .arg("--")
-            .env("GIT_DIR", &self.git_dir)
             .output()
-            .map_err(|e| format!("git worktree add (init) failed: {}", e))?;
+            .map_err(|e| format!("git init (tmp) failed: {}", e))?;
         if !o.status.success() {
+            let _ = fs::remove_dir_all(&tmp);
             return Err(format!(
-                "git worktree add for init failed: {}",
+                "git init (tmp) failed: {}",
                 String::from_utf8_lossy(&o.stderr)
             ));
+        }
+
+        // Configure identity in the temp repo.
+        for (key, value) in [
+            ("user.name", "loopy-boot"),
+            ("user.email", "boot@loopy.local"),
+        ] {
+            let _ = Command::new("git")
+                .args(["config", key, value])
+                .current_dir(&tmp)
+                .output();
         }
 
         let o = Command::new("git")
@@ -165,18 +179,29 @@ impl VersionManager {
             .current_dir(&tmp)
             .output()
             .map_err(|e| format!("git commit (init) failed: {}", e))?;
+        if !o.status.success() {
+            let _ = fs::remove_dir_all(&tmp);
+            return Err(format!(
+                "git initial commit failed: {}",
+                String::from_utf8_lossy(&o.stderr)
+            ));
+        }
 
-        // Remove temp worktree regardless of commit outcome.
-        let _ = Command::new("git")
-            .args(["worktree", "remove", "--force"])
-            .arg(&tmp)
-            .env("GIT_DIR", &self.git_dir)
-            .output();
+        // Push the initial commit into the bare repo.
+        let o = Command::new("git")
+            .args(["push"])
+            .arg(&self.git_dir)
+            .args(["HEAD:refs/heads/main"])
+            .current_dir(&tmp)
+            .output()
+            .map_err(|e| format!("git push (init) failed: {}", e))?;
+
+        // Remove temp repo regardless of push outcome.
         let _ = fs::remove_dir_all(&tmp);
 
         if !o.status.success() {
             return Err(format!(
-                "git initial commit failed: {}",
+                "git push initial commit to bare repo failed: {}",
                 String::from_utf8_lossy(&o.stderr)
             ));
         }
