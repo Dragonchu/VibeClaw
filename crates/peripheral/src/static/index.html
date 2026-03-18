@@ -333,7 +333,8 @@
         try {
           const raw = localStorage.getItem(STORAGE_KEY);
           return raw ? JSON.parse(raw) : [];
-        } catch {
+        } catch (e) {
+          console.warn('Failed to load chat history:', e);
           return [];
         }
       }
@@ -341,7 +342,9 @@
       function saveHistory(history) {
         try {
           localStorage.setItem(STORAGE_KEY, JSON.stringify(history));
-        } catch {}
+        } catch (e) {
+          console.warn('Failed to save chat history:', e);
+        }
       }
 
       function appendToHistory(entry) {
@@ -467,7 +470,11 @@
           msgContainer.appendChild(welcomeEl);
           welcomeEl.style.display = '';
         }
-        try { await fetch('/api/reset', { method: 'POST' }); } catch {}
+        try {
+          await fetch('/api/reset', { method: 'POST' });
+        } catch (e) {
+          console.warn('Failed to reset backend conversation:', e);
+        }
       });
 
       function appendUserMessage(text) {
