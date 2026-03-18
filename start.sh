@@ -107,13 +107,18 @@ else
     else
         warn "An existing peripheral workspace was found at:"
         warn "  ${DEFAULT_WORKSPACE}"
-        echo ""
-        echo -ne "${YELLOW}[vibeclaw]${RESET} Do you want to overwrite it with the default peripheral? [y/N] "
-        read -r answer
-        if [[ "${answer}" =~ ^[Yy]$ ]]; then
-            backup_and_sync
+        if [[ ! -t 0 ]]; then
+            info "Non-interactive mode detected. Use --force to overwrite."
+            info "Keeping existing workspace."
         else
-            info "Keeping existing workspace. Skipping overwrite."
+            echo ""
+            echo -ne "${YELLOW}[vibeclaw]${RESET} Do you want to overwrite it with the default peripheral? [y/N] "
+            read -r answer
+            if [[ "${answer}" =~ ^[Yy]$ ]]; then
+                backup_and_sync
+            else
+                info "Keeping existing workspace. Skipping overwrite."
+            fi
         fi
     fi
 fi
