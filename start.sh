@@ -64,9 +64,11 @@ PIDS=()
 cleanup() {
     echo ""
     info "Shutting down…"
-    for pid in "${PIDS[@]:-}"; do
-        kill "$pid" 2>/dev/null || true
-    done
+    if [[ ${#PIDS[@]} -gt 0 ]]; then
+        for pid in "${PIDS[@]}"; do
+            kill "$pid" 2>/dev/null || true
+        done
+    fi
     ok "All processes stopped."
 }
 trap cleanup EXIT INT TERM
@@ -77,8 +79,9 @@ RUST_LOG="${RUST_LOG:-info}" \
     "${SCRIPT_DIR}/target/release/loopy-boot" \
     > "${LOG_DIR}/boot.log" 2>&1 &
 PIDS+=($!)
+BOOT_PID=$!
 sleep 1
-ok "loopy-boot running  (pid ${PIDS[-1]}, log: .loopy/logs/boot.log)"
+ok "loopy-boot running  (pid ${BOOT_PID}, log: .loopy/logs/boot.log)"
 
 # ── loopy-compiler ────────────────────────────────────────────────────────────
 info "Starting loopy-compiler…"
@@ -86,8 +89,9 @@ RUST_LOG="${RUST_LOG:-info}" \
     "${SCRIPT_DIR}/target/release/loopy-compiler" \
     > "${LOG_DIR}/compiler.log" 2>&1 &
 PIDS+=($!)
+COMPILER_PID=$!
 sleep 1
-ok "loopy-compiler running  (pid ${PIDS[-1]}, log: .loopy/logs/compiler.log)"
+ok "loopy-compiler running  (pid ${COMPILER_PID}, log: .loopy/logs/compiler.log)"
 
 # ── loopy-peripheral ─────────────────────────────────────────────────────────
 if [[ "${SKIP_PERIPHERAL}" -eq 0 ]]; then
@@ -97,8 +101,9 @@ if [[ "${SKIP_PERIPHERAL}" -eq 0 ]]; then
         "${SCRIPT_DIR}/target/release/loopy-peripheral" \
         > "${LOG_DIR}/peripheral.log" 2>&1 &
     PIDS+=($!)
+    PERIPHERAL_PID=$!
     sleep 2
-    ok "loopy-peripheral running  (pid ${PIDS[-1]}, log: .loopy/logs/peripheral.log)"
+    ok "loopy-peripheral running  (pid ${PERIPHERAL_PID}, log: .loopy/logs/peripheral.log)"
     echo ""
     echo -e "${BOLD}  ➜  Open http://127.0.0.1:${LOOPY_HTTP_PORT:-7700}${RESET}"
 fi
