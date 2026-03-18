@@ -87,9 +87,11 @@ impl VersionManager {
                 .args(["rev-parse", "--verify", "refs/heads/main"])
                 .env("GIT_DIR", &self.git_dir)
                 .output();
-            if let Ok(o) = check {
-                if o.status.success() {
-                    return Ok(()); // Repo is healthy.
+            match check {
+                Ok(o) if o.status.success() => return Ok(()), // Repo is healthy.
+                Ok(_) => {} // Non-zero exit — main branch missing.
+                Err(e) => {
+                    tracing::debug!("git rev-parse to verify 'main' failed to run: {}", e);
                 }
             }
             // Stale bare repo — remove and re-create.
@@ -97,7 +99,13 @@ impl VersionManager {
                 git_dir = %self.git_dir.display(),
                 "Bare repo exists but 'main' branch is missing; re-initialising"
             );
-            let _ = fs::remove_dir_all(&self.git_dir);
+            fs::remove_dir_all(&self.git_dir).map_err(|e| {
+                format!(
+                    "Failed to remove stale bare repo at {}: {}",
+                    self.git_dir.display(),
+                    e
+                )
+            })?;
         }
 
         fs::create_dir_all(&self.git_dir)
