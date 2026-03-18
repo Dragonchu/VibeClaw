@@ -132,6 +132,7 @@ pub struct Microkernel {
     constitution_manager: ConstitutionManager,
     protocol_manager: ProtocolManager,
     hot_swap: HotSwapState,
+    shutdown_requested: bool,
 }
 
 impl Microkernel {
@@ -162,6 +163,7 @@ impl Microkernel {
             constitution_manager,
             protocol_manager,
             hot_swap: HotSwapState::Idle,
+            shutdown_requested: false,
         }
     }
 
@@ -197,6 +199,10 @@ impl Microkernel {
             tokio::time::interval(Duration::from_secs(RESOURCE_CHECK_INTERVAL_SECS));
         let mut hot_swap_tick = tokio::time::interval(Duration::from_secs(2));
 
+        let mut sigterm = tokio::signal::unix::signal(
+            tokio::signal::unix::SignalKind::terminate(),
+        )?;
+
         loop {
             tokio::select! {
                 Some(envelope) = boot_rx.recv() => {
@@ -214,8 +220,44 @@ impl Microkernel {
                 _ = hot_swap_tick.tick() => {
                     self.check_hot_swap(&router_ref).await;
                 }
+                _ = sigterm.recv() => {
+                    tracing::warn!("Received SIGTERM — initiating graceful shutdown");
+                    self.initiate_shutdown(&router_ref).await;
+                }
+            }
+
+            if self.shutdown_requested {
+                break;
             }
         }
+
+        // Grace period: wait for all peers to disconnect
+        tracing::info!("Waiting for peers to disconnect (up to 5s)…");
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            let peers = router_ref.connected_peers().await;
+            if peers.is_empty() {
+                tracing::info!("All peers disconnected");
+                break;
+            }
+            if tokio::time::Instant::now() >= deadline {
+                tracing::warn!("Grace period expired, {} peer(s) still connected", peers.len());
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+
+        // Clean up socket file
+        if self.config.sock_path.exists() {
+            if let Err(e) = std::fs::remove_file(&self.config.sock_path) {
+                tracing::warn!("Failed to remove socket file: {}", e);
+            } else {
+                tracing::info!(path = %self.config.sock_path.display(), "Socket file removed");
+            }
+        }
+
+        tracing::info!("Boot microkernel shut down cleanly");
+        Ok(())
     }
 
     async fn handle_message(&mut self, envelope: Envelope, router: &std::sync::Arc<IpcRouter>) {
@@ -280,6 +322,9 @@ impl Microkernel {
             }
             msg_types::ADMIN_AUDIT_QUERY_REQUEST => {
                 self.handle_admin_audit_query(envelope, router).await;
+            }
+            msg_types::ADMIN_SHUTDOWN_REQUEST => {
+                self.handle_admin_shutdown(envelope, router).await;
             }
             _ => {
                 if messages::is_core_message(&envelope.msg_type) {
@@ -1497,7 +1542,7 @@ impl Microkernel {
         router.broadcast(envelope).await;
     }
 
-    async fn initiate_shutdown(&self, router: &std::sync::Arc<IpcRouter>) {
+    async fn initiate_shutdown(&mut self, router: &std::sync::Arc<IpcRouter>) {
         tracing::warn!("Initiating system shutdown — sending Shutdown to all peers");
 
         let shutdown = messages::Shutdown {
@@ -1514,6 +1559,32 @@ impl Microkernel {
         };
 
         router.broadcast(envelope).await;
+        self.shutdown_requested = true;
+    }
+
+    async fn handle_admin_shutdown(
+        &mut self,
+        envelope: Envelope,
+        router: &std::sync::Arc<IpcRouter>,
+    ) {
+        let from = envelope.from.clone();
+        tracing::warn!(requested_by = %from, "Admin shutdown requested");
+
+        // Send acknowledgement before initiating shutdown
+        let response = Envelope {
+            from: "boot".to_string(),
+            to: from,
+            msg_type: msg_types::ADMIN_SHUTDOWN_RESPONSE.to_string(),
+            id: envelope.id,
+            payload: serde_json::to_value(&messages::AdminShutdownResponse {
+                success: true,
+                error: None,
+            })
+            .unwrap_or_default(),
+        };
+        let _ = router.send(response).await;
+
+        self.initiate_shutdown(router).await;
     }
 
     async fn check_resource_based_transitions(&mut self, router: &std::sync::Arc<IpcRouter>) {

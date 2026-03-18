@@ -410,6 +410,17 @@ pub struct AdminAuditQueryResponse {
     pub error: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AdminShutdownRequest {
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AdminShutdownResponse {
+    pub success: bool,
+    pub error: Option<String>,
+}
+
 // ---------------------------------------------------------------------------
 // Well-known message type constants
 // ---------------------------------------------------------------------------
@@ -465,6 +476,8 @@ pub mod msg_types {
     pub const ADMIN_UNLOCK_VERSION_RESPONSE: &str = "AdminUnlockVersionResponse";
     pub const ADMIN_AUDIT_QUERY_REQUEST: &str = "AdminAuditQueryRequest";
     pub const ADMIN_AUDIT_QUERY_RESPONSE: &str = "AdminAuditQueryResponse";
+    pub const ADMIN_SHUTDOWN_REQUEST: &str = "AdminShutdownRequest";
+    pub const ADMIN_SHUTDOWN_RESPONSE: &str = "AdminShutdownResponse";
 }
 
 /// Check if a message type is a core type that Boot should handle itself.
@@ -515,5 +528,7 @@ pub fn is_core_message(msg_type: &str) -> bool {
             | msg_types::ADMIN_UNLOCK_VERSION_RESPONSE
             | msg_types::ADMIN_AUDIT_QUERY_REQUEST
             | msg_types::ADMIN_AUDIT_QUERY_RESPONSE
+            | msg_types::ADMIN_SHUTDOWN_REQUEST
+            | msg_types::ADMIN_SHUTDOWN_RESPONSE
     )
 }

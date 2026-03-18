@@ -131,12 +131,43 @@ info "Building workspace (release)…"
 cargo build --release 2>&1 | tail -5
 ok "Build complete."
 
+# ── stop previous instances ───────────────────────────────────────────────────
+LOOPY_SOCK="${LOOPY_SOCKET:-${LOOPY_DIR}/loopy.sock}"
+
+stop_existing() {
+    if [[ -S "$LOOPY_SOCK" ]]; then
+        info "Existing system detected — requesting graceful shutdown via loopy-admin…"
+        if "${SCRIPT_DIR}/target/release/loopy-admin" --socket "$LOOPY_SOCK" shutdown 2>/dev/null; then
+            ok "Shutdown command accepted. Waiting for socket to disappear…"
+            local waited=0
+            while [[ -S "$LOOPY_SOCK" ]] && [[ "$waited" -lt 10 ]]; do
+                sleep 1
+                waited=$((waited + 1))
+            done
+            if [[ -S "$LOOPY_SOCK" ]]; then
+                warn "Socket still present after ${waited}s — removing stale socket"
+                rm -f "$LOOPY_SOCK"
+            else
+                ok "Old system exited cleanly."
+            fi
+        else
+            warn "loopy-admin shutdown failed (boot may have already exited). Continuing…"
+            rm -f "$LOOPY_SOCK"
+        fi
+    fi
+}
+stop_existing
+
 # ── cleanup on exit ───────────────────────────────────────────────────────────
 PIDS=()
 cleanup() {
     echo ""
     info "Shutting down…"
+    # Use loopy-admin for graceful shutdown (boot broadcasts to all peers)
+    "${SCRIPT_DIR}/target/release/loopy-admin" --socket "$LOOPY_SOCK" shutdown 2>/dev/null || true
+    # Fallback: kill any remaining child processes
     if [[ ${#PIDS[@]} -gt 0 ]]; then
+        sleep 2
         for pid in "${PIDS[@]}"; do
             kill "$pid" 2>/dev/null || true
         done
@@ -144,6 +175,15 @@ cleanup() {
     ok "All processes stopped."
 }
 trap cleanup EXIT INT TERM
+
+# ── liveness check helper ─────────────────────────────────────────────────────
+check_alive() {
+    local name="$1" pid="$2" log="$3"
+    if ! kill -0 "$pid" 2>/dev/null; then
+        echo ""
+        die "${name} exited unexpectedly. Check ${log} for details:\n$(tail -20 "${log}")"
+    fi
+}
 
 # ── loopy-boot ────────────────────────────────────────────────────────────────
 info "Starting loopy-boot…"
@@ -153,6 +193,7 @@ RUST_LOG="${RUST_LOG:-info}" \
 PIDS+=($!)
 BOOT_PID=$!
 sleep 1
+check_alive "loopy-boot" "$BOOT_PID" "${LOG_DIR}/boot.log"
 ok "loopy-boot running  (pid ${BOOT_PID}, log: .loopy/logs/boot.log)"
 
 # ── loopy-compiler ────────────────────────────────────────────────────────────
@@ -163,6 +204,7 @@ RUST_LOG="${RUST_LOG:-info}" \
 PIDS+=($!)
 COMPILER_PID=$!
 sleep 1
+check_alive "loopy-compiler" "$COMPILER_PID" "${LOG_DIR}/compiler.log"
 ok "loopy-compiler running  (pid ${COMPILER_PID}, log: .loopy/logs/compiler.log)"
 
 # ── loopy-peripheral ─────────────────────────────────────────────────────────
@@ -175,6 +217,7 @@ if [[ "${SKIP_PERIPHERAL}" -eq 0 ]]; then
     PIDS+=($!)
     PERIPHERAL_PID=$!
     sleep 2
+    check_alive "loopy-peripheral" "$PERIPHERAL_PID" "${LOG_DIR}/peripheral.log"
     ok "loopy-peripheral running  (pid ${PERIPHERAL_PID}, log: .loopy/logs/peripheral.log)"
     echo ""
     echo -e "${BOLD}  ➜  Open http://127.0.0.1:${LOOPY_HTTP_PORT:-7700}${RESET}"
