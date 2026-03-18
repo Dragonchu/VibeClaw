@@ -48,6 +48,10 @@ enum Command {
         limit: usize,
     },
     Unlock,
+    Shutdown {
+        #[arg(long, default_value = "Admin-initiated shutdown")]
+        reason: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -98,6 +102,7 @@ async fn main() {
         Command::Peers => cmd_peers(&mut client).await,
         Command::Audit { event, limit } => cmd_audit(&mut client, event, limit).await,
         Command::Unlock => cmd_unlock(&mut client).await,
+        Command::Shutdown { reason } => cmd_shutdown(&mut client, &reason).await,
     };
 
     if let Err(e) = result {
@@ -396,6 +401,30 @@ async fn cmd_unlock(client: &mut AdminClient) -> Result<(), BoxError> {
         println!("Version manager unlocked successfully.");
     } else {
         println!("Version manager was not locked.");
+    }
+    Ok(())
+}
+
+async fn cmd_shutdown(client: &mut AdminClient, reason: &str) -> Result<(), BoxError> {
+    let resp = client
+        .request(
+            msg_types::ADMIN_SHUTDOWN_REQUEST,
+            serde_json::to_value(&messages::AdminShutdownRequest {
+                reason: reason.to_string(),
+            })?,
+        )
+        .await?;
+
+    let data: messages::AdminShutdownResponse = serde_json::from_value(resp.payload)?;
+
+    if data.success {
+        println!("Shutdown initiated. Boot is terminating all services.");
+    } else {
+        eprintln!(
+            "Shutdown failed: {}",
+            data.error.as_deref().unwrap_or("unknown error")
+        );
+        std::process::exit(1);
     }
     Ok(())
 }

@@ -132,33 +132,28 @@ cargo build --release 2>&1 | tail -5
 ok "Build complete."
 
 # ── stop previous instances ───────────────────────────────────────────────────
+LOOPY_SOCK="${LOOPY_SOCKET:-${LOOPY_DIR}/loopy.sock}"
+
 stop_existing() {
-    local found=0
-    for name in loopy-boot loopy-compiler loopy-peripheral; do
-        local pids
-        pids="$(pgrep -x "$name" 2>/dev/null || true)"
-        if [[ -n "$pids" ]]; then
-            found=1
-            info "Stopping old ${name} (pid ${pids// /, })…"
-            echo "$pids" | xargs -r kill 2>/dev/null || true
-        fi
-    done
-    if [[ "$found" -eq 1 ]]; then
-        sleep 1
-        for name in loopy-boot loopy-compiler loopy-peripheral; do
-            local pids
-            pids="$(pgrep -x "$name" 2>/dev/null || true)"
-            if [[ -n "$pids" ]]; then
-                warn "Force-killing old ${name} (pid ${pids// /, })…"
-                echo "$pids" | xargs -r kill -9 2>/dev/null || true
+    if [[ -S "$LOOPY_SOCK" ]]; then
+        info "Existing system detected — requesting graceful shutdown via loopy-admin…"
+        if "${SCRIPT_DIR}/target/release/loopy-admin" --socket "$LOOPY_SOCK" shutdown 2>/dev/null; then
+            ok "Shutdown command accepted. Waiting for socket to disappear…"
+            local waited=0
+            while [[ -S "$LOOPY_SOCK" ]] && [[ "$waited" -lt 10 ]]; do
+                sleep 1
+                waited=$((waited + 1))
+            done
+            if [[ -S "$LOOPY_SOCK" ]]; then
+                warn "Socket still present after ${waited}s — removing stale socket"
+                rm -f "$LOOPY_SOCK"
+            else
+                ok "Old system exited cleanly."
             fi
-        done
-        ok "Old instances stopped."
-    fi
-    local sock="${LOOPY_SOCKET:-${LOOPY_DIR}/loopy.sock}"
-    if [[ -S "$sock" ]]; then
-        rm -f "$sock"
-        info "Removed stale socket: ${sock}"
+        else
+            warn "loopy-admin shutdown failed (boot may have already exited). Continuing…"
+            rm -f "$LOOPY_SOCK"
+        fi
     fi
 }
 stop_existing
@@ -168,7 +163,11 @@ PIDS=()
 cleanup() {
     echo ""
     info "Shutting down…"
+    # Use loopy-admin for graceful shutdown (boot broadcasts to all peers)
+    "${SCRIPT_DIR}/target/release/loopy-admin" --socket "$LOOPY_SOCK" shutdown 2>/dev/null || true
+    # Fallback: kill any remaining child processes
     if [[ ${#PIDS[@]} -gt 0 ]]; then
+        sleep 2
         for pid in "${PIDS[@]}"; do
             kill "$pid" 2>/dev/null || true
         done
