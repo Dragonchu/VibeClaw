@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use loopy_ipc::messages::DimensionScore;
+use reloopy_ipc::messages::DimensionScore;
 use serde::Deserialize;
 
 #[derive(Debug, Deserialize)]

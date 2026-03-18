@@ -1,4 +1,4 @@
-//! Loopy compiler service.
+//! Reloopy compiler service.
 //!
 //! Connects to Boot's Unix Domain Socket, completes handshake,
 //! and maintains a heartbeat lease. In later phases, handles
@@ -10,10 +10,10 @@ use std::time::Duration;
 use tokio::net::UnixStream;
 use tokio::process::Command;
 
-use loopy_ipc::messages::{
+use reloopy_ipc::messages::{
     CompileRequest, CompileResult, Envelope, Hello, HealthReport, LeaseRenew, Welcome, msg_types,
 };
-use loopy_ipc::wire;
+use reloopy_ipc::wire;
 use tracing::{error, info, warn};
 
 const IDENTITY: &str = "compiler";
@@ -29,9 +29,9 @@ impl Default for Config {
         let base_dir = std::env::var("HOME")
             .map(PathBuf::from)
             .unwrap_or_else(|_| PathBuf::from("."))
-            .join(".loopy");
+            .join(".reloopy");
         Self {
-            sock_path: base_dir.join("loopy.sock"),
+            sock_path: base_dir.join("reloopy.sock"),
             heartbeat_interval: Duration::from_secs(8),
         }
     }
@@ -52,7 +52,7 @@ async fn main() {
         )
         .init();
 
-    info!("loopy-compiler service starting");
+    info!("reloopy-compiler service starting");
 
     let config = Config::default();
 
@@ -202,7 +202,7 @@ async fn handle_compile_request(envelope: &Envelope) -> CompileResult {
         .arg("build")
         .arg("--release")
         .arg("-p")
-        .arg("loopy-peripheral")
+        .arg("reloopy-peripheral")
         .arg("--target-dir")
         .arg(&request.output_path)
         .current_dir(&request.source_path)
@@ -215,7 +215,7 @@ async fn handle_compile_request(envelope: &Envelope) -> CompileResult {
             if result.status.success() {
                 let binary_path = PathBuf::from(&request.output_path)
                     .join("release")
-                    .join("loopy-peripheral");
+                    .join("reloopy-peripheral");
                 let binary_str = binary_path.to_string_lossy().to_string();
 
                 info!(version = %request.version, binary = %binary_str, "Compilation succeeded");

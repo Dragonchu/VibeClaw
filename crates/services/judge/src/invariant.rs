@@ -1,10 +1,10 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use loopy_ipc::messages::{
+use reloopy_ipc::messages::{
     Envelope, Hello, LeaseRenew, Welcome, msg_types, InvariantResult,
 };
-use loopy_ipc::wire;
+use reloopy_ipc::wire;
 use serde::Deserialize;
 use tokio::net::{UnixListener, UnixStream};
 use tokio::process::{Child, Command};
@@ -87,7 +87,7 @@ impl InvariantRunner {
     }
 
     async fn spawn_candidate(&self, binary_path: &str) -> Result<(Child, UnixStream, PathBuf), String> {
-        let temp_dir = std::env::temp_dir().join(format!("loopy-judge-{}", std::process::id()));
+        let temp_dir = std::env::temp_dir().join(format!("reloopy-judge-{}", std::process::id()));
         std::fs::create_dir_all(&temp_dir)
             .map_err(|e| format!("Failed to create temp dir: {}", e))?;
 

@@ -3,7 +3,7 @@
 //! Handles proposals to modify `constitution/invariants.json` and
 //! `constitution/benchmarks.json`. Every amendment requires a valid
 //! HMAC-SHA256 signature produced with the shared secret stored in
-//! `~/.loopy/secret.key`. Approved amendments are appended to
+//! `~/.reloopy/secret.key`. Approved amendments are appended to
 //! `constitution/amendments.log`.
 //! See plan §2.5-A.
 

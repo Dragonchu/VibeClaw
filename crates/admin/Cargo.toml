@@ -1,10 +1,10 @@
 [package]
-name = "loopy-admin"
+name = "reloopy-admin"
 version.workspace = true
 edition.workspace = true
 
 [[bin]]
-name = "loopy-admin"
+name = "reloopy-admin"
 path = "src/main.rs"
 
 [dependencies]
@@ -14,4 +14,4 @@ serde_json = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 clap = { workspace = true }
-loopy-ipc = { workspace = true }
+reloopy-ipc = { workspace = true }

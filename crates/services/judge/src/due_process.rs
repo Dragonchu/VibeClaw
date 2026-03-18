@@ -1,4 +1,4 @@
-use loopy_ipc::messages::{DimensionScore, InvariantResult, TestResult, TestVerdict};
+use reloopy_ipc::messages::{DimensionScore, InvariantResult, TestResult, TestVerdict};
 
 use crate::benchmark::ScoringResult;
 

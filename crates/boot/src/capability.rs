@@ -166,7 +166,7 @@ fn default_peripheral_capabilities(base_dir: &Path) -> Capabilities {
             allowed: false,
             whitelist: vec![],
         },
-        ipc: vec!["loopy.sock".to_string()],
+        ipc: vec!["reloopy.sock".to_string()],
         max_child_processes: 0,
     }
 }
@@ -275,7 +275,7 @@ mod tests {
                 allowed: false,
                 whitelist: vec![],
             },
-            ipc: vec!["loopy.sock".to_string()],
+            ipc: vec!["reloopy.sock".to_string()],
             max_child_processes: 0,
         };
         let violations = detect_escalations(&caps, &caps);
@@ -334,7 +334,7 @@ mod tests {
                 allowed: true,
                 whitelist: vec!["cmd1".to_string()],
             },
-            ipc: vec!["loopy.sock".to_string()],
+            ipc: vec!["reloopy.sock".to_string()],
             max_child_processes: 4,
         };
         let new = Capabilities {
@@ -350,7 +350,7 @@ mod tests {
                 allowed: false,
                 whitelist: vec![],
             },
-            ipc: vec!["loopy.sock".to_string()],
+            ipc: vec!["reloopy.sock".to_string()],
             max_child_processes: 2,
         };
         let violations = detect_escalations(&old, &new);

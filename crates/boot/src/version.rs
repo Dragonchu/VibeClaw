@@ -125,8 +125,8 @@ impl VersionManager {
 
         // Configure identity so commits succeed in CI / headless environments.
         for (key, value) in [
-            ("user.name", "loopy-boot"),
-            ("user.email", "boot@loopy.local"),
+            ("user.name", "reloopy-boot"),
+            ("user.email", "boot@reloopy.local"),
         ] {
             let o = Command::new("git")
                 .args(["config", "--file"])
@@ -165,8 +165,8 @@ impl VersionManager {
 
         // Configure identity in the temp repo.
         for (key, value) in [
-            ("user.name", "loopy-boot"),
-            ("user.email", "boot@loopy.local"),
+            ("user.name", "reloopy-boot"),
+            ("user.email", "boot@reloopy.local"),
         ] {
             let o = Command::new("git")
                 .args(["config", key, value])

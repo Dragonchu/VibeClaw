@@ -5,10 +5,10 @@ use std::time::Duration;
 
 use tokio::net::UnixStream;
 
-use loopy_ipc::messages::{
+use reloopy_ipc::messages::{
     AuditLog, Envelope, HealthReport, Hello, LeaseRenew, Welcome, msg_types,
 };
-use loopy_ipc::wire;
+use reloopy_ipc::wire;
 use tracing::{error, info, warn};
 
 const IDENTITY: &str = "audit";
@@ -25,9 +25,9 @@ impl Default for Config {
         let home = std::env::var("HOME")
             .map(PathBuf::from)
             .unwrap_or_else(|_| PathBuf::from("."));
-        let base_dir = home.join(".loopy");
+        let base_dir = home.join(".reloopy");
         Self {
-            sock_path: base_dir.join("loopy.sock"),
+            sock_path: base_dir.join("reloopy.sock"),
             audit_dir: base_dir.join("audit"),
             heartbeat_interval: Duration::from_secs(8),
         }
@@ -49,7 +49,7 @@ async fn main() {
         )
         .init();
 
-    info!("loopy-audit service starting");
+    info!("reloopy-audit service starting");
 
     let config = Config::default();
 

@@ -13,7 +13,7 @@ use tokio_stream::wrappers::ReceiverStream;
 use crate::agent::{Agent, AgentEvent, AgentOutcome};
 use crate::ipc_client;
 
-use loopy_ipc::messages::{msg_types, Envelope};
+use reloopy_ipc::messages::{msg_types, Envelope};
 
 const INDEX_HTML: &str = include_str!("static/index.html");
 

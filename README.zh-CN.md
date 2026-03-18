@@ -1,37 +1,38 @@
-# VibeClaw
+# Reloopy
 
 [English README](./README.md)
 
-<p align="center">
-  <img src="./image.png" alt="VibeClaw — Since all claw is vibe code, why not vibe your own claw?" width="720" />
-</p>
-
 > **一个 Rust 编写的源码级自进化 Agent 系统。**
-> VibeClaw 正在构建 **Loopy**：一个能够读取、改写、编译、测试、裁决并热切换**自身源码**的 AI Agent——你不需要继续等待别人来定义你的 AI 助手。
+> Reloopy 是一个能够读取、改写、编译、测试、裁决并热切换**自身源码**的 AI Agent——你不需要继续等待别人来定义你的 AI 助手。
 
-**为什么它会让人眼前一亮：**
+## 源码级自进化——Reloopy 的核心差异
+
+大多数 Agent 框架所说的"自我改进"停留在 prompt 调优或 RAG 调参层面。
+Reloopy 运行在一个根本不同的层次：**Agent 阅读自己的 Rust 源码、暂存修改、编译出候选二进制、通过策略校验，并在 Boot 微内核监管下原地热替换**。
+
+```text
+Prompt → Agent 改源码 → Compiler 编译候选版本 → Judge / Policy 裁决 → Boot 热切换或回滚
+```
+
+这不是示意图——而是目前已经实现的闭环。核心机制分布在：
+
+- `crates/peripheral/src/source.rs` — 读取并暂存源码文件
+- `crates/peripheral/src/agent.rs` — LLM 驱动的 tool-calling 循环，调用源码工具
+- `crates/boot/src/version.rs` — 管理版本目录和 symlink 切换
+- `crates/boot/src/microkernel.rs` — 编排 compile → test → swap 流水线
+
+**核心设计原则：**
 
 - **简单、轻**：极小 Boot 微内核 + 少量系统服务。
 - **自由度高**：有需求就让 Agent 朝那个方向进化，而不是等平台排期。
 - **攻击面更小**：内建功能越少，被迫信任的代码就越少。
 - **选择权在你手里**：要安全、要激进、要保守、要强大，都由你自己决定升级规则与边界。
 
-## 3 秒看懂
-
-VibeClaw 不是套了聊天界面的 AI 壳子。
-它是一个运行时：Agent 可以**检查自己的 Rust 源码、暂存代码修改、编译候选版本、通过策略校验，并在 Boot 监管下原地热替换**。
-
-```text
-Prompt → Agent 改源码 → Compiler 编译候选版本 → Judge / Policy 裁决 → Boot 热切换或回滚
-```
-
-如果你认同个人 AI 应该是**可拥有、可审查、可在源码层进化**的，这个项目就是为你准备的。
-
 ## 安装 & 启动（一条命令）
 
 ```bash
-git clone https://github.com/Dragonchu/VibeClaw.git
-cd VibeClaw
+git clone https://github.com/Dragonchu/reloopy.git
+cd reloopy
 DEEPSEEK_API_KEY=your_key_here ./start.sh
 ```
 
@@ -51,19 +52,19 @@ cargo build
 ### 2）启动微内核
 
 ```bash
-RUST_LOG=info cargo run --bin loopy-boot
+RUST_LOG=info cargo run --bin reloopy-boot
 ```
 
 ### 3）在另一个终端启动编译服务
 
 ```bash
-cargo run --bin loopy-compiler
+cargo run --bin reloopy-compiler
 ```
 
 ### 4）启动自进化 Peripheral Agent
 
 ```bash
-LOOPY_WORKSPACE=$PWD DEEPSEEK_API_KEY=your_key_here cargo run --bin loopy-peripheral
+RELOOPY_WORKSPACE=$PWD DEEPSEEK_API_KEY=your_key_here cargo run --bin reloopy-peripheral
 ```
 
 然后打开 <http://127.0.0.1:7700>。
@@ -86,15 +87,13 @@ curl -N http://127.0.0.1:7700/api/chat \
 - Agent 直接读取 `crates/peripheral/` 下的源码
 - 当它决定进化时，会把候选更新提交给 Boot 做验证和裁决
 
-![Loopy 本地界面](https://github.com/user-attachments/assets/47ac39aa-56b0-4187-bd7b-9d7efb5fbfdb)
-
 如果你想在配置 API Key 之前先做一次 smoke test：
 
 ```bash
-cargo run --bin loopy-admin -- status
+cargo run --bin reloopy-admin -- status
 ```
 
-## 核心功能
+## 自进化闭环如何运转
 
 ### 1. 源码级自进化
 
@@ -113,7 +112,7 @@ Peripheral Agent 被明确授予以下能力：
 
 ### 2. 极简且尽量不可变的 Boot 微内核
 
-`loopy-boot` 刻意把可信核心缩到最小，只负责：
+`reloopy-boot` 刻意把可信核心缩到最小，只负责：
 
 - 基于 Unix Domain Socket 的 IPC 路由
 - 基于 Lease 的进程监管
@@ -145,16 +144,16 @@ Peripheral Agent 被明确授予以下能力：
 | `DEEPSEEK_API_KEY` | Peripheral 访问 LLM 所必需 |
 | `DEEPSEEK_BASE_URL` | 可选，覆盖 DeepSeek API 地址 |
 | `DEEPSEEK_MODEL` | 可选，覆盖模型名 |
-| `LOOPY_WORKSPACE` | 指定 Peripheral 可检查、可暂存的工作区 |
-| `LOOPY_SOCKET` | 覆盖 Unix Socket 路径（默认：`~/.loopy/loopy.sock`） |
-| `LOOPY_HTTP_PORT` | 覆盖本地 Web UI 端口（默认：`7700`） |
+| `RELOOPY_WORKSPACE` | 指定 Peripheral 可检查、可暂存的工作区 |
+| `RELOOPY_SOCKET` | 覆盖 Unix Socket 路径（默认：`~/.reloopy/reloopy.sock`） |
+| `RELOOPY_HTTP_PORT` | 覆盖本地 Web UI 端口（默认：`7700`） |
 | `RUST_LOG` | 控制 tracing 日志级别 |
 
 ### 关键磁盘路径
 
-- Socket：`~/.loopy/loopy.sock`
-- State：`~/.loopy/state/`
-- Peripheral 版本目录：`~/.loopy/peripheral/vNNN/`
+- Socket：`~/.reloopy/reloopy.sock`
+- State：`~/.reloopy/state/`
+- Peripheral 版本目录：`~/.reloopy/peripheral/vNNN/`
 - Constitution：`./constitution/`
 - 设计文档：[`plan.md`](./plan.md)
 
@@ -179,10 +178,10 @@ curl -N http://127.0.0.1:7700/api/chat \
 ### Admin CLI
 
 ```bash
-cargo run --bin loopy-admin -- status
-cargo run --bin loopy-admin -- peers
-cargo run --bin loopy-admin -- versions
-cargo run --bin loopy-admin -- runlevel
+cargo run --bin reloopy-admin -- status
+cargo run --bin reloopy-admin -- peers
+cargo run --bin reloopy-admin -- versions
+cargo run --bin reloopy-admin -- runlevel
 ```
 
 ### 仓库结构
@@ -199,19 +198,6 @@ constitution/              不变量、基准、修正案日志
 protocol/                  协议定义
 plan.md                    详细设计文档
 ```
-
-## 为什么是 VibeClaw，而不是另一个 Agent 框架？
-
-因为很多时候，真正厉害的能力是：**不预装一大堆你并不需要的功能**。
-
-VibeClaw 想保持足够小、足够透明、足够可改，让你可以：
-
-- 进化出你真正想要的助手
-- 不为别人的 roadmap 膨胀买单
-- 把可信核心保持在尽可能小的范围内
-- 自己决定能力和安全之间的平衡点
-
-这也是项目最核心的主张：**它既自进化、很强，也刻意保持克制与极简。**
 
 ## 贡献指南
 

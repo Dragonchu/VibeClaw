@@ -1,6 +1,6 @@
 //! Protocol evolution via negotiated extensions.
 //!
-//! Maintains a JSON protocol registry at `~/.loopy/protocol/messages.json`
+//! Maintains a JSON protocol registry at `~/.reloopy/protocol/messages.json`
 //! that tracks known message types and the current protocol version.
 //! Backward-compatible extensions (new message types) can be auto-adopted;
 //! breaking changes (modifying existing message schemas) require human

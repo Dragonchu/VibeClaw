@@ -20,7 +20,7 @@ async fn main() {
         )
         .init();
 
-    info!("loopy-boot microkernel starting");
+    info!("reloopy-boot microkernel starting");
 
     let config = microkernel::BootConfig::default();
     let mut kernel = microkernel::Microkernel::new(config);

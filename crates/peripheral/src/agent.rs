@@ -4,7 +4,7 @@ use crate::deepseek::{ChatMessage, DeepSeekClient, StreamEvent};
 use crate::source::SourceManager;
 use crate::tools::{self, ToolResult};
 
-const SYSTEM_PROMPT: &str = r#"You are Loopy, a self-evolving AI agent written in Rust. You can read and modify your own source code to improve yourself.
+const SYSTEM_PROMPT: &str = r#"You are Reloopy, a self-evolving AI agent written in Rust. You can read and modify your own source code to improve yourself.
 
 ## Available Tools
 - read_source_file(path): Read a file from your source code. Path is relative to the peripheral crate root (e.g. "src/main.rs", "Cargo.toml")

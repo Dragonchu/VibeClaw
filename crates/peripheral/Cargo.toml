@@ -1,10 +1,10 @@
 [package]
-name = "loopy-peripheral"
+name = "reloopy-peripheral"
 version.workspace = true
 edition.workspace = true
 
 [[bin]]
-name = "loopy-peripheral"
+name = "reloopy-peripheral"
 path = "src/main.rs"
 
 [dependencies]
@@ -16,4 +16,4 @@ tracing-subscriber = { workspace = true }
 reqwest = { workspace = true }
 axum = { workspace = true }
 tokio-stream = { workspace = true }
-loopy-ipc = { workspace = true }
+reloopy-ipc = { workspace = true }
