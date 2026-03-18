@@ -517,11 +517,15 @@
       function appendToBlock(type, data) {
         if (!pendingAssistant) return;
         const blocks = pendingAssistant.blocks;
-        const last = blocks[blocks.length - 1];
-        if (last && last.type === type && type !== 'tool') {
-          last.text += data;
-        } else if (type === 'tool') {
+        // Tool blocks are always separate entries
+        if (type === 'tool') {
           blocks.push({ type: 'tool', name: data.name, output: data.output });
+          return;
+        }
+        // Merge consecutive text blocks of the same type (reasoning, content)
+        const last = blocks[blocks.length - 1];
+        if (last && last.type === type) {
+          last.text += data;
         } else {
           blocks.push({ type, text: data });
         }
