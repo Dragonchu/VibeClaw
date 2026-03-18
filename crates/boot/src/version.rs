@@ -77,9 +77,27 @@ impl VersionManager {
     }
 
     /// Initialise the bare git repo at `base_dir/git/` if it does not already exist.
+    /// Also recovers from a partially initialised repo where `main` has no commits.
     fn init_git_repo_if_needed(&self) -> Result<(), String> {
         if self.git_dir.join("HEAD").exists() {
-            return Ok(());
+            // Verify `main` branch actually exists (has at least one commit).
+            // A previous init may have created the bare repo but failed before
+            // committing, leaving HEAD present but `main` as a dangling ref.
+            let check = Command::new("git")
+                .args(["rev-parse", "--verify", "refs/heads/main"])
+                .env("GIT_DIR", &self.git_dir)
+                .output();
+            if let Ok(o) = check {
+                if o.status.success() {
+                    return Ok(()); // Repo is healthy.
+                }
+            }
+            // Stale bare repo — remove and re-create.
+            tracing::warn!(
+                git_dir = %self.git_dir.display(),
+                "Bare repo exists but 'main' branch is missing; re-initialising"
+            );
+            let _ = fs::remove_dir_all(&self.git_dir);
         }
 
         fs::create_dir_all(&self.git_dir)
@@ -137,7 +155,6 @@ impl VersionManager {
         let o = Command::new("git")
             .args(["commit", "--allow-empty", "-m", "Initial commit"])
             .current_dir(&tmp)
-            .env("GIT_DIR", self.git_dir.join(".git").as_os_str().to_os_string().to_string_lossy().as_ref())
             .output()
             .map_err(|e| format!("git commit (init) failed: {}", e))?;
 
@@ -467,6 +484,79 @@ fn chrono_now_iso() -> String {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default();
     format!("{}s", now.as_secs())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn allocate_v1_creates_worktree_from_main() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mgr = VersionManager::new(tmp.path());
+
+        let info = mgr.allocate_version().expect("V1 allocation should succeed");
+        assert_eq!(info.version, "V1");
+        assert!(info.source_dir.exists(), "source dir must exist");
+
+        // `main` branch must be resolvable in the bare repo.
+        let out = Command::new("git")
+            .args(["rev-parse", "--verify", "refs/heads/main"])
+            .env("GIT_DIR", &mgr.git_dir)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "main branch must exist after init");
+
+        // V1 branch must also exist.
+        let out = Command::new("git")
+            .args(["rev-parse", "--verify", "refs/heads/V1"])
+            .env("GIT_DIR", &mgr.git_dir)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "V1 branch must exist");
+    }
+
+    #[test]
+    fn allocate_v2_based_on_v1() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mgr = VersionManager::new(tmp.path());
+
+        let v1 = mgr.allocate_version().expect("V1");
+        assert_eq!(v1.version, "V1");
+
+        let v2 = mgr.allocate_version().expect("V2");
+        assert_eq!(v2.version, "V2");
+        assert!(v2.source_dir.exists());
+    }
+
+    #[test]
+    fn stale_bare_repo_is_recovered() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mgr = VersionManager::new(tmp.path());
+        mgr.ensure_dirs().unwrap();
+
+        // Create a bare repo but do NOT commit, simulating a stale init.
+        fs::create_dir_all(&mgr.git_dir).unwrap();
+        let out = Command::new("git")
+            .args(["init", "--bare"])
+            .arg(&mgr.git_dir)
+            .output()
+            .unwrap();
+        assert!(out.status.success());
+        assert!(mgr.git_dir.join("HEAD").exists(), "HEAD should exist");
+
+        // init_git_repo_if_needed should detect missing `main` and re-init.
+        mgr.init_git_repo_if_needed()
+            .expect("should recover from stale bare repo");
+
+        // Now `main` must be valid.
+        let out = Command::new("git")
+            .args(["rev-parse", "--verify", "refs/heads/main"])
+            .env("GIT_DIR", &mgr.git_dir)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "main must exist after recovery");
+    }
 }
 
 fn copy_dir_recursive(src: &Path, dst: &Path) -> std::io::Result<()> {
