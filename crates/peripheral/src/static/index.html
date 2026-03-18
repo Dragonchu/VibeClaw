@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Loopy</title>
+    <title>Reloopy</title>
     <style>
       * {
         margin: 0;
@@ -446,7 +446,7 @@
   </head>
   <body>
     <div id="header">
-      <span class="brand">Loopy</span>
+      <span class="brand">Reloopy</span>
       <button id="new-chat-btn">New Chat</button>
     </div>
 
@@ -472,7 +472,7 @@
         <textarea
           id="input"
           rows="1"
-          placeholder="Message Loopy..."
+          placeholder="Message Reloopy..."
           autofocus
         ></textarea>
         <button type="submit" id="send-btn" aria-label="Send">
@@ -485,7 +485,7 @@
     </div>
 
     <script>
-      const STORAGE_KEY = 'loopy-chat-history';
+      const STORAGE_KEY = 'reloopy-chat-history';
 
       const msgContainer = document.getElementById('msg-container');
       const input = document.getElementById('input');
@@ -577,7 +577,7 @@
       function renderAssistantMessage(entry) {
         const el = document.createElement('div');
         el.className = 'msg assistant';
-        el.innerHTML = '<div class="role">Loopy</div>';
+        el.innerHTML = '<div class="role">Reloopy</div>';
 
         if (entry.blocks) {
           // New ordered-blocks format — renders in chronological order
@@ -735,7 +735,7 @@
         currentAssistantEl = document.createElement('div');
         currentAssistantEl.className = 'msg assistant';
         currentAssistantEl.innerHTML =
-          '<div class="role"><span class="spinner"></span>Loopy</div>';
+          '<div class="role"><span class="spinner"></span>Reloopy</div>';
         currentContentEl = null;
         currentReasoningEl = null;
         currentToolEl = null;

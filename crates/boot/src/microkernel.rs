@@ -19,7 +19,7 @@ use crate::resource::{ResourceLimits, ResourceMonitor, ViolationSeverity};
 use crate::runlevel::{Runlevel, RunlevelManager, TransitionReason};
 use crate::state::{MigrationTransaction, StateStore};
 use crate::version::VersionManager;
-use loopy_ipc::messages::{self, Envelope, LeaseAck, TestVerdict, Welcome, msg_types};
+use reloopy_ipc::messages::{self, Envelope, LeaseAck, TestVerdict, Welcome, msg_types};
 
 #[derive(Debug, Clone)]
 pub struct BootConfig {
@@ -32,8 +32,8 @@ pub struct BootConfig {
 
 impl Default for BootConfig {
     fn default() -> Self {
-        let base_dir = dirs_home().join(".loopy");
-        let sock_path = base_dir.join("loopy.sock");
+        let base_dir = dirs_home().join(".reloopy");
+        let sock_path = base_dir.join("reloopy.sock");
         Self {
             base_dir,
             sock_path,
@@ -1309,9 +1309,9 @@ impl Microkernel {
             .join("source");
 
         let child = tokio::process::Command::new(binary_path)
-            .env("LOOPY_WORKSPACE", &source_dir)
+            .env("RELOOPY_WORKSPACE", &source_dir)
             .env(
-                "LOOPY_SOCKET",
+                "RELOOPY_SOCKET",
                 self.config.sock_path.to_string_lossy().to_string(),
             )
             .env("RUST_LOG", "info")

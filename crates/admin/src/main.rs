@@ -3,16 +3,16 @@ mod client;
 use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
-use loopy_ipc::messages::{self, msg_types};
+use reloopy_ipc::messages::{self, msg_types};
 
 use client::AdminClient;
 
 type BoxError = Box<dyn std::error::Error + Send + Sync>;
 
 #[derive(Parser)]
-#[command(name = "loopy-admin", about = "Loopy system administration tool")]
+#[command(name = "reloopy-admin", about = "Reloopy system administration tool")]
 struct Cli {
-    #[arg(long, default_value = "~/.loopy/loopy.sock")]
+    #[arg(long, default_value = "~/.reloopy/reloopy.sock")]
     socket: String,
 
     #[command(subcommand)]
@@ -129,7 +129,7 @@ async fn cmd_status(client: &mut AdminClient) -> Result<(), BoxError> {
         _ => "Unknown",
     };
 
-    println!("=== Loopy System Status ===");
+    println!("=== Reloopy System Status ===");
     println!("Runlevel:         {} ({})", status.runlevel, runlevel_name);
     println!(
         "Current version:  {}",

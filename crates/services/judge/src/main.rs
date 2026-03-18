@@ -7,10 +7,10 @@ use std::time::Duration;
 
 use tokio::net::UnixStream;
 
-use loopy_ipc::messages::{
+use reloopy_ipc::messages::{
     Envelope, HealthReport, Hello, LeaseRenew, TestRequest, Welcome, msg_types,
 };
-use loopy_ipc::wire;
+use reloopy_ipc::wire;
 use tracing::{error, info, warn};
 
 use benchmark::{BenchmarkScorer, BenchmarksConfig};
@@ -30,9 +30,9 @@ impl Default for Config {
         let home = std::env::var("HOME")
             .map(PathBuf::from)
             .unwrap_or_else(|_| PathBuf::from("."));
-        let base_dir = home.join(".loopy");
+        let base_dir = home.join(".reloopy");
 
-        let constitution_dir = std::env::var("LOOPY_CONSTITUTION_DIR")
+        let constitution_dir = std::env::var("RELOOPY_CONSTITUTION_DIR")
             .map(PathBuf::from)
             .unwrap_or_else(|_| {
                 std::env::var("CARGO_MANIFEST_DIR")
@@ -41,7 +41,7 @@ impl Default for Config {
             });
 
         Self {
-            sock_path: base_dir.join("loopy.sock"),
+            sock_path: base_dir.join("reloopy.sock"),
             constitution_dir,
             heartbeat_interval: Duration::from_secs(8),
         }
@@ -63,7 +63,7 @@ async fn main() {
         )
         .init();
 
-    info!("loopy-judge service starting");
+    info!("reloopy-judge service starting");
 
     let config = Config::default();
 
@@ -196,13 +196,13 @@ async fn handle_test_request(
     envelope: &Envelope,
     invariant_runner: &InvariantRunner,
     benchmark_scorer: &BenchmarkScorer,
-) -> loopy_ipc::messages::TestResult {
+) -> reloopy_ipc::messages::TestResult {
     let request: TestRequest = match serde_json::from_value(envelope.payload.clone()) {
         Ok(r) => r,
         Err(e) => {
-            return loopy_ipc::messages::TestResult {
+            return reloopy_ipc::messages::TestResult {
                 version: String::new(),
-                verdict: loopy_ipc::messages::TestVerdict::HardFail,
+                verdict: reloopy_ipc::messages::TestVerdict::HardFail,
                 invariant_results: vec![],
                 dimension_scores: vec![],
                 overall_score: 0.0,

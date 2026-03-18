@@ -1,4 +1,4 @@
-# Loopy — Project Guidelines
+# Reloopy — Project Guidelines
 
 ## Overview
 
@@ -7,23 +7,23 @@ Self-evolving AI agent system in Rust. A minimal, immutable Boot microkernel sup
 ## Architecture
 
 ```
-loopy-boot (microkernel, UDS listener at ~/.loopy/loopy.sock)
-  ├── loopy-compiler   (service)
-  ├── loopy-judge      (service, skeleton)
-  ├── loopy-audit      (service, skeleton)
-  └── loopy-peripheral (agent, skeleton)
+reloopy-boot (microkernel, UDS listener at ~/.reloopy/reloopy.sock)
+  ├── reloopy-compiler   (service)
+  ├── reloopy-judge      (service, skeleton)
+  ├── reloopy-audit      (service, skeleton)
+  └── reloopy-peripheral (agent, skeleton)
 ```
 
-All processes communicate exclusively over Unix Domain Sockets via `loopy-ipc`. Boot routes messages by inspecting `Envelope.to`.
+All processes communicate exclusively over Unix Domain Sockets via `reloopy-ipc`. Boot routes messages by inspecting `Envelope.to`.
 
 | Crate              | Path                        | Role                                                                                     |
 | ------------------ | --------------------------- | ---------------------------------------------------------------------------------------- |
-| `loopy-ipc`        | `crates/ipc/`               | Shared IPC library: `Envelope`, message types, wire format (4-byte BE length + JSON)     |
-| `loopy-boot`       | `crates/boot/`              | Microkernel: IPC routing, lease management, version switching, state store, runlevel FSM |
-| `loopy-compiler`   | `crates/services/compiler/` | Receives `CompileRequest`, runs `cargo build --release`, returns `CompileResult`         |
-| `loopy-judge`      | `crates/services/judge/`    | Test runner + scoring (Phase 3, not yet implemented)                                     |
-| `loopy-audit`      | `crates/services/audit/`    | Audit log writer/query (Phase 3, not yet implemented)                                    |
-| `loopy-peripheral` | `crates/peripheral/`        | The self-evolving agent (DeepSeek LLM, REPL, tool-calling, hot replacement)              |
+| `reloopy-ipc`        | `crates/ipc/`               | Shared IPC library: `Envelope`, message types, wire format (4-byte BE length + JSON)     |
+| `reloopy-boot`       | `crates/boot/`              | Microkernel: IPC routing, lease management, version switching, state store, runlevel FSM |
+| `reloopy-compiler`   | `crates/services/compiler/` | Receives `CompileRequest`, runs `cargo build --release`, returns `CompileResult`         |
+| `reloopy-judge`      | `crates/services/judge/`    | Test runner + scoring (Phase 3, not yet implemented)                                     |
+| `reloopy-audit`      | `crates/services/audit/`    | Audit log writer/query (Phase 3, not yet implemented)                                    |
+| `reloopy-peripheral` | `crates/peripheral/`        | The self-evolving agent (DeepSeek LLM, REPL, tool-calling, hot replacement)              |
 
 ### Boot Subsystems (crates/boot/src/)
 
@@ -38,8 +38,8 @@ All processes communicate exclusively over Unix Domain Sockets via `loopy-ipc`. 
 
 ```sh
 cargo build                                # Build all workspace crates
-RUST_LOG=debug cargo run --bin loopy-boot  # Start microkernel
-cargo run --bin loopy-compiler             # Start compiler service (connects to boot)
+RUST_LOG=debug cargo run --bin reloopy-boot  # Start microkernel
+cargo run --bin reloopy-compiler             # Start compiler service (connects to boot)
 ```
 
 No test suite exists yet. Rust edition 2024, workspace resolver 3.
@@ -57,13 +57,13 @@ No test suite exists yet. Rust edition 2024, workspace resolver 3.
 
 ## Dependencies
 
-Intentionally minimal — only: `tokio`, `serde`, `serde_json`, `tracing`, `tracing-subscriber`, `reqwest` (peripheral only, for LLM API), and internal `loopy-ipc`. Discuss before adding any new dependency.
+Intentionally minimal — only: `tokio`, `serde`, `serde_json`, `tracing`, `tracing-subscriber`, `reqwest` (peripheral only, for LLM API), and internal `reloopy-ipc`. Discuss before adding any new dependency.
 
 ## Project Conventions
 
-- Crate binaries named `loopy-*`; peer identities match crate names without prefix.
+- Crate binaries named `reloopy-*`; peer identities match crate names without prefix.
 - Module-level `//!` doc comments describe purpose with plan.md section references.
-- State files live under `~/.loopy/state/` (JSON, with in-memory cache).
-- Version directories under `~/.loopy/versions/vNNN/` with `current`/`rollback` symlinks.
-- UDS socket: `~/.loopy/loopy.sock`.
+- State files live under `~/.reloopy/state/` (JSON, with in-memory cache).
+- Version directories under `~/.reloopy/versions/vNNN/` with `current`/`rollback` symlinks.
+- UDS socket: `~/.reloopy/reloopy.sock`.
 - See `.claude/rules/` for additional coding rules (ownership patterns, no speculation, architecture-first design, clean code).

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# VibeClaw one-click start script
+# Reloopy one-click start script
 # Usage: DEEPSEEK_API_KEY=your_key ./start.sh
 #
 # Options:
@@ -10,10 +10,10 @@ set -euo pipefail
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
 CYAN='\033[0;36m'; BOLD='\033[1m'; RESET='\033[0m'
 
-info()  { echo -e "${CYAN}[vibeclaw]${RESET} $*"; }
-ok()    { echo -e "${GREEN}[vibeclaw]${RESET} $*"; }
-warn()  { echo -e "${YELLOW}[vibeclaw]${RESET} $*"; }
-die()   { echo -e "${RED}[vibeclaw] ERROR:${RESET} $*" >&2; exit 1; }
+info()  { echo -e "${CYAN}[reloopy]${RESET} $*"; }
+ok()    { echo -e "${GREEN}[reloopy]${RESET} $*"; }
+warn()  { echo -e "${YELLOW}[reloopy]${RESET} $*"; }
+die()   { echo -e "${RED}[reloopy] ERROR:${RESET} $*" >&2; exit 1; }
 
 # ── parse flags ──────────────────────────────────────────────────────────────
 FORCE_OVERWRITE=0
@@ -48,11 +48,11 @@ else
 fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-LOOPY_DIR="${HOME}/.loopy"
-DEFAULT_WORKSPACE="${LOOPY_DIR}/workspace"
+RELOOPY_DIR="${HOME}/.reloopy"
+DEFAULT_WORKSPACE="${RELOOPY_DIR}/workspace"
 
 # ── sync source to default workspace ─────────────────────────────────────────
-BACKUP_DIR="${LOOPY_DIR}/backups"
+BACKUP_DIR="${RELOOPY_DIR}/backups"
 
 sync_workspace() {
     info "Syncing source to default workspace: ${DEFAULT_WORKSPACE}"
@@ -80,7 +80,7 @@ backup_and_sync() {
     ok "Workspace backed up to: ${ws_backup}"
 
     # Also back up peripheral version history if it exists.
-    local peripheral_dir="${LOOPY_DIR}/peripheral"
+    local peripheral_dir="${RELOOPY_DIR}/peripheral"
     if [[ -d "${peripheral_dir}" ]]; then
         local p_backup="${BACKUP_DIR}/peripheral.${timestamp}"
         if [[ -e "${p_backup}" ]]; then
@@ -112,7 +112,7 @@ else
             info "Keeping existing workspace."
         else
             echo ""
-            echo -ne "${YELLOW}[vibeclaw]${RESET} Do you want to overwrite it with the default peripheral? [y/N] "
+            echo -ne "${YELLOW}[reloopy]${RESET} Do you want to overwrite it with the default peripheral? [y/N] "
             read -r answer
             if [[ "${answer}" =~ ^[Yy]$ ]]; then
                 backup_and_sync
@@ -123,7 +123,7 @@ else
     fi
 fi
 
-LOG_DIR="${LOOPY_DIR}/logs"
+LOG_DIR="${RELOOPY_DIR}/logs"
 mkdir -p "${LOG_DIR}"
 
 # ── build ─────────────────────────────────────────────────────────────────────
@@ -132,27 +132,27 @@ cargo build --release 2>&1 | tail -5
 ok "Build complete."
 
 # ── stop previous instances ───────────────────────────────────────────────────
-LOOPY_SOCK="${LOOPY_SOCKET:-${LOOPY_DIR}/loopy.sock}"
+RELOOPY_SOCK="${RELOOPY_SOCKET:-${RELOOPY_DIR}/reloopy.sock}"
 
 stop_existing() {
-    if [[ -S "$LOOPY_SOCK" ]]; then
-        info "Existing system detected — requesting graceful shutdown via loopy-admin…"
-        if "${SCRIPT_DIR}/target/release/loopy-admin" --socket "$LOOPY_SOCK" shutdown 2>/dev/null; then
+    if [[ -S "$RELOOPY_SOCK" ]]; then
+        info "Existing system detected — requesting graceful shutdown via reloopy-admin…"
+        if "${SCRIPT_DIR}/target/release/reloopy-admin" --socket "$RELOOPY_SOCK" shutdown 2>/dev/null; then
             ok "Shutdown command accepted. Waiting for socket to disappear…"
             local waited=0
-            while [[ -S "$LOOPY_SOCK" ]] && [[ "$waited" -lt 10 ]]; do
+            while [[ -S "$RELOOPY_SOCK" ]] && [[ "$waited" -lt 10 ]]; do
                 sleep 1
                 waited=$((waited + 1))
             done
-            if [[ -S "$LOOPY_SOCK" ]]; then
+            if [[ -S "$RELOOPY_SOCK" ]]; then
                 warn "Socket still present after ${waited}s — removing stale socket"
-                rm -f "$LOOPY_SOCK"
+                rm -f "$RELOOPY_SOCK"
             else
                 ok "Old system exited cleanly."
             fi
         else
-            warn "loopy-admin shutdown failed (boot may have already exited). Continuing…"
-            rm -f "$LOOPY_SOCK"
+            warn "reloopy-admin shutdown failed (boot may have already exited). Continuing…"
+            rm -f "$RELOOPY_SOCK"
         fi
     fi
 }
@@ -163,8 +163,8 @@ PIDS=()
 cleanup() {
     echo ""
     info "Shutting down…"
-    # Use loopy-admin for graceful shutdown (boot broadcasts to all peers)
-    "${SCRIPT_DIR}/target/release/loopy-admin" --socket "$LOOPY_SOCK" shutdown 2>/dev/null || true
+    # Use reloopy-admin for graceful shutdown (boot broadcasts to all peers)
+    "${SCRIPT_DIR}/target/release/reloopy-admin" --socket "$RELOOPY_SOCK" shutdown 2>/dev/null || true
     # Fallback: kill any remaining child processes
     if [[ ${#PIDS[@]} -gt 0 ]]; then
         sleep 2
@@ -185,42 +185,42 @@ check_alive() {
     fi
 }
 
-# ── loopy-boot ────────────────────────────────────────────────────────────────
-info "Starting loopy-boot…"
+# ── reloopy-boot ────────────────────────────────────────────────────────────────
+info "Starting reloopy-boot…"
 RUST_LOG="${RUST_LOG:-info}" \
-    "${SCRIPT_DIR}/target/release/loopy-boot" \
+    "${SCRIPT_DIR}/target/release/reloopy-boot" \
     > "${LOG_DIR}/boot.log" 2>&1 &
 PIDS+=($!)
 BOOT_PID=$!
 sleep 1
-check_alive "loopy-boot" "$BOOT_PID" "${LOG_DIR}/boot.log"
-ok "loopy-boot running  (pid ${BOOT_PID}, log: .loopy/logs/boot.log)"
+check_alive "reloopy-boot" "$BOOT_PID" "${LOG_DIR}/boot.log"
+ok "reloopy-boot running  (pid ${BOOT_PID}, log: .reloopy/logs/boot.log)"
 
-# ── loopy-compiler ────────────────────────────────────────────────────────────
-info "Starting loopy-compiler…"
+# ── reloopy-compiler ────────────────────────────────────────────────────────────
+info "Starting reloopy-compiler…"
 RUST_LOG="${RUST_LOG:-info}" \
-    "${SCRIPT_DIR}/target/release/loopy-compiler" \
+    "${SCRIPT_DIR}/target/release/reloopy-compiler" \
     > "${LOG_DIR}/compiler.log" 2>&1 &
 PIDS+=($!)
 COMPILER_PID=$!
 sleep 1
-check_alive "loopy-compiler" "$COMPILER_PID" "${LOG_DIR}/compiler.log"
-ok "loopy-compiler running  (pid ${COMPILER_PID}, log: .loopy/logs/compiler.log)"
+check_alive "reloopy-compiler" "$COMPILER_PID" "${LOG_DIR}/compiler.log"
+ok "reloopy-compiler running  (pid ${COMPILER_PID}, log: .reloopy/logs/compiler.log)"
 
-# ── loopy-peripheral ─────────────────────────────────────────────────────────
+# ── reloopy-peripheral ─────────────────────────────────────────────────────────
 if [[ "${SKIP_PERIPHERAL}" -eq 0 ]]; then
-    info "Starting loopy-peripheral…"
+    info "Starting reloopy-peripheral…"
     RUST_LOG="${RUST_LOG:-info}" \
     DEEPSEEK_API_KEY="${DEEPSEEK_API_KEY}" \
-        "${SCRIPT_DIR}/target/release/loopy-peripheral" \
+        "${SCRIPT_DIR}/target/release/reloopy-peripheral" \
         > "${LOG_DIR}/peripheral.log" 2>&1 &
     PIDS+=($!)
     PERIPHERAL_PID=$!
     sleep 2
-    check_alive "loopy-peripheral" "$PERIPHERAL_PID" "${LOG_DIR}/peripheral.log"
-    ok "loopy-peripheral running  (pid ${PERIPHERAL_PID}, log: .loopy/logs/peripheral.log)"
+    check_alive "reloopy-peripheral" "$PERIPHERAL_PID" "${LOG_DIR}/peripheral.log"
+    ok "reloopy-peripheral running  (pid ${PERIPHERAL_PID}, log: .reloopy/logs/peripheral.log)"
     echo ""
-    echo -e "${BOLD}  ➜  Open http://127.0.0.1:${LOOPY_HTTP_PORT:-7700}${RESET}"
+    echo -e "${BOLD}  ➜  Open http://127.0.0.1:${RELOOPY_HTTP_PORT:-7700}${RESET}"
 fi
 
 echo ""

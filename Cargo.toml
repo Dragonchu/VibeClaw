@@ -27,4 +27,4 @@ reqwest = { version = "0.12", features = ["json", "stream"] }
 axum = "0.8"
 tokio-stream = "0.1"
 clap = { version = "4", features = ["derive"] }
-loopy-ipc = { path = "crates/ipc" }
+reloopy-ipc = { path = "crates/ipc" }

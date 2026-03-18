@@ -3,8 +3,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use tokio::net::UnixStream;
 
-use loopy_ipc::messages::{Envelope, msg_types};
-use loopy_ipc::wire;
+use reloopy_ipc::messages::{Envelope, msg_types};
+use reloopy_ipc::wire;
 
 static MSG_COUNTER: AtomicU64 = AtomicU64::new(1);
 
@@ -37,7 +37,7 @@ impl AdminClient {
             to: "boot".to_string(),
             msg_type: msg_types::HELLO.to_string(),
             id: next_id(),
-            payload: serde_json::to_value(&loopy_ipc::messages::Hello {
+            payload: serde_json::to_value(&reloopy_ipc::messages::Hello {
                 protocol_version: "1.0".to_string(),
                 capabilities: serde_json::json!(["admin"]),
             })?,

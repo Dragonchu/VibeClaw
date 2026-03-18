@@ -12,7 +12,7 @@ use std::time::Duration;
 
 use tokio::sync::{Mutex, mpsc};
 
-use loopy_ipc::messages::{Envelope, msg_types};
+use reloopy_ipc::messages::{Envelope, msg_types};
 
 use crate::agent::Agent;
 use crate::deepseek::DeepSeekClient;
@@ -38,11 +38,11 @@ impl Config {
             .map(PathBuf::from)
             .unwrap_or_else(|_| PathBuf::from("."));
 
-        let base_dir = home.join(".loopy");
+        let base_dir = home.join(".reloopy");
 
-        let sock_path = std::env::var("LOOPY_SOCKET")
+        let sock_path = std::env::var("RELOOPY_SOCKET")
             .map(PathBuf::from)
-            .unwrap_or_else(|_| base_dir.join("loopy.sock"));
+            .unwrap_or_else(|_| base_dir.join("reloopy.sock"));
 
         let workspace_root = resolve_workspace_root(&base_dir)?;
 
@@ -52,7 +52,7 @@ impl Config {
         let api_base_url = std::env::var("DEEPSEEK_BASE_URL").ok();
         let model = std::env::var("DEEPSEEK_MODEL").ok();
 
-        let http_port = std::env::var("LOOPY_HTTP_PORT")
+        let http_port = std::env::var("RELOOPY_HTTP_PORT")
             .ok()
             .and_then(|s| s.parse().ok())
             .unwrap_or(DEFAULT_HTTP_PORT);
@@ -71,32 +71,32 @@ impl Config {
 
 fn resolve_workspace_root(base_dir: &PathBuf) -> Result<PathBuf, String> {
     // 1. Explicit override via environment variable.
-    if let Ok(ws) = std::env::var("LOOPY_WORKSPACE") {
+    if let Ok(ws) = std::env::var("RELOOPY_WORKSPACE") {
         let path = PathBuf::from(ws);
         if path.join("crates").join("peripheral").exists() {
             return Ok(path);
         }
         return Err(format!(
-            "LOOPY_WORKSPACE={} does not contain crates/peripheral/",
+            "RELOOPY_WORKSPACE={} does not contain crates/peripheral/",
             path.display()
         ));
     }
 
-    // 2. Default managed workspace: ~/.loopy/workspace
+    // 2. Default managed workspace: ~/.reloopy/workspace
     let default_ws = base_dir.join("workspace");
     if default_ws.join("crates").join("peripheral").exists() {
         return Ok(default_ws);
     }
 
-    // 3. Evolved source after a hot-swap: ~/.loopy/peripheral/current/source/
+    // 3. Evolved source after a hot-swap: ~/.reloopy/peripheral/current/source/
     let evolved_source = base_dir.join("peripheral").join("current").join("source");
     if evolved_source.join("crates").join("peripheral").exists() {
         return Ok(evolved_source);
     }
 
     Err(
-        "Cannot determine workspace root. Set LOOPY_WORKSPACE env var, \
-         populate ~/.loopy/workspace, or ensure ~/.loopy/peripheral/current/source/ exists."
+        "Cannot determine workspace root. Set RELOOPY_WORKSPACE env var, \
+         populate ~/.reloopy/workspace, or ensure ~/.reloopy/peripheral/current/source/ exists."
             .to_string(),
     )
 }
@@ -112,7 +112,7 @@ fn read_config_api_key(base_dir: &PathBuf) -> Result<String, String> {
             return Ok(key.to_string());
         }
     }
-    Err("DEEPSEEK_API_KEY not set and not found in ~/.loopy/config.json".to_string())
+    Err("DEEPSEEK_API_KEY not set and not found in ~/.reloopy/config.json".to_string())
 }
 
 #[tokio::main]
@@ -136,7 +136,7 @@ async fn main() {
         workspace = %config.workspace_root.display(),
         sock = %config.sock_path.display(),
         http_port = config.http_port,
-        "loopy-peripheral starting"
+        "reloopy-peripheral starting"
     );
 
     let ipc = match ipc_client::connect_and_handshake(&config.sock_path).await {

@@ -1,10 +1,10 @@
 [package]
-name = "loopy-boot"
+name = "reloopy-boot"
 version.workspace = true
 edition.workspace = true
 
 [[bin]]
-name = "loopy-boot"
+name = "reloopy-boot"
 path = "src/main.rs"
 
 [dependencies]
@@ -16,7 +16,7 @@ tracing-subscriber = { workspace = true }
 hmac = { workspace = true }
 sha2 = { workspace = true }
 hex = { workspace = true }
-loopy-ipc = { workspace = true }
+reloopy-ipc = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3"

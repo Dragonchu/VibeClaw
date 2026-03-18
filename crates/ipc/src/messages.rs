@@ -1,4 +1,4 @@
-//! IPC message types for the Loopy system.
+//! IPC message types for the Reloopy system.
 //!
 //! Boot only hard-codes the **core** message types it needs to understand.
 //! All other messages are treated as opaque JSON payloads and routed by `from`/`to` fields.

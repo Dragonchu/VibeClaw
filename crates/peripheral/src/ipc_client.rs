@@ -4,8 +4,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::net::UnixStream;
 use tokio::sync::mpsc;
 
-use loopy_ipc::messages::{Envelope, Hello, HealthReport, LeaseRenew, Welcome, msg_types};
-use loopy_ipc::wire;
+use reloopy_ipc::messages::{Envelope, Hello, HealthReport, LeaseRenew, Welcome, msg_types};
+use reloopy_ipc::wire;
 
 const IDENTITY: &str = "peripheral";
 
@@ -109,7 +109,7 @@ pub fn make_heartbeat(runlevel: u8) -> Envelope {
 }
 
 pub fn make_submit_update(source_path: &str) -> Envelope {
-    let submit = loopy_ipc::messages::SubmitUpdate {
+    let submit = reloopy_ipc::messages::SubmitUpdate {
         source_path: source_path.to_string(),
     };
     Envelope {

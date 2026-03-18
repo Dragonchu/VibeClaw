@@ -93,7 +93,7 @@ impl SourceManager {
         let base = std::env::var("HOME")
             .map(PathBuf::from)
             .unwrap_or_else(|_| PathBuf::from("/tmp"))
-            .join(".loopy")
+            .join(".reloopy")
             .join("staging");
         fs::create_dir_all(&base).map_err(|e| format!("Failed to create staging base: {}", e))?;
 
@@ -163,7 +163,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 reqwest = { version = "0.12", features = ["json", "stream"] }
 axum = "0.8"
 tokio-stream = "0.1"
-loopy-ipc = { path = "crates/ipc" }
+reloopy-ipc = { path = "crates/ipc" }
 "#;
 
     fs::write(staging.join("Cargo.toml"), content)

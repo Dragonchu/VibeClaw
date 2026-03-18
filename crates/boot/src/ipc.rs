@@ -12,8 +12,8 @@ use std::sync::Arc;
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::{RwLock, mpsc};
 
-use loopy_ipc::messages::Envelope;
-use loopy_ipc::wire;
+use reloopy_ipc::messages::Envelope;
+use reloopy_ipc::wire;
 
 /// A handle representing a connected peer.
 #[derive(Debug)]

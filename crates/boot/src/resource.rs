@@ -6,7 +6,7 @@
 
 use std::collections::HashMap;
 
-use loopy_ipc::messages::HealthReport;
+use reloopy_ipc::messages::HealthReport;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -8,7 +8,7 @@
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
-use loopy_ipc::messages::HealthReport;
+use reloopy_ipc::messages::HealthReport;
 
 /// Configuration for the lease system.
 #[derive(Debug, Clone)]

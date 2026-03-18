@@ -1,37 +1,38 @@
-# VibeClaw
+# Reloopy
 
 [中文 README](./README.zh-CN.md)
 
-<p align="center">
-  <img src="./image.png" alt="VibeClaw — Since all claw is vibe code, why not vibe your own claw?" width="720" />
-</p>
-
 > **A source-level self-evolving agent system in Rust.**
-> VibeClaw is building **Loopy**: an AI agent that can read, rewrite, compile, test, judge, and hot-swap **its own source code** — so you do not have to wait for someone else to define your assistant.
+> Reloopy is an AI agent that can read, rewrite, compile, test, judge, and hot-swap **its own source code** — so you do not have to wait for someone else to define your assistant.
 
-**Why this project feels different:**
+## Source-level self-evolution — what makes Reloopy different
+
+Most agent frameworks treat "self-improvement" as prompt engineering or RAG tuning.
+Reloopy operates at a fundamentally lower level: **the agent reads its own Rust source, stages code changes, compiles a candidate binary, passes policy checks, and gets hot-swapped in place** — all under Boot microkernel supervision.
+
+```text
+Prompt → agent edits source → compiler builds candidate → judge/policy validates → Boot hot-swaps or rolls back
+```
+
+This is not a diagram of a future feature — it is the implemented loop today. The mechanism lives in:
+
+- `crates/peripheral/src/source.rs` — reads and stages source files
+- `crates/peripheral/src/agent.rs` — LLM-driven tool-calling loop that invokes source tools
+- `crates/boot/src/version.rs` — manages version directories and symlink switching
+- `crates/boot/src/microkernel.rs` — orchestrates compile → test → swap pipeline
+
+**Key design principles:**
 
 - **Simple and light**: a tiny Boot microkernel plus a small set of services.
 - **Freedom by default**: if you need a capability, the agent can evolve toward it instead of waiting for a vendor roadmap.
 - **Smaller attack surface**: fewer built-in features means less code you are forced to trust.
 - **Your trade-offs, not ours**: secure or aggressive, conservative or experimental — you decide the policy, the constitution, and the upgrade gate.
 
-## 3-second overview
-
-VibeClaw is not just an AI app wrapper.
-It is a runtime where an agent can **inspect its own Rust source, stage code changes, compile them, pass policy checks, and be replaced in place** under Boot supervision.
-
-```text
-Prompt → agent edits source → compiler builds candidate → judge/policy validates → Boot hot-swaps or rolls back
-```
-
-If you believe personal AI should be **owned, inspectable, and evolvable at the source level**, this repo is for you.
-
 ## Install & start (one command)
 
 ```bash
-git clone https://github.com/Dragonchu/VibeClaw.git
-cd VibeClaw
+git clone https://github.com/Dragonchu/reloopy.git
+cd reloopy
 DEEPSEEK_API_KEY=your_key_here ./start.sh
 ```
 
@@ -51,19 +52,19 @@ cargo build
 ### 2) Start the microkernel
 
 ```bash
-RUST_LOG=info cargo run --bin loopy-boot
+RUST_LOG=info cargo run --bin reloopy-boot
 ```
 
 ### 3) Start the compiler service in another terminal
 
 ```bash
-cargo run --bin loopy-compiler
+cargo run --bin reloopy-compiler
 ```
 
 ### 4) Start the self-evolving peripheral agent
 
 ```bash
-LOOPY_WORKSPACE=$PWD DEEPSEEK_API_KEY=your_key_here cargo run --bin loopy-peripheral
+RELOOPY_WORKSPACE=$PWD DEEPSEEK_API_KEY=your_key_here cargo run --bin reloopy-peripheral
 ```
 
 Then open <http://127.0.0.1:7700>.
@@ -86,15 +87,13 @@ curl -N http://127.0.0.1:7700/api/chat \
 - the agent reading files from `crates/peripheral/`
 - when it decides to evolve, a staged update submitted back to Boot for validation
 
-![Loopy local UI](https://github.com/user-attachments/assets/47ac39aa-56b0-4187-bd7b-9d7efb5fbfdb)
-
 Want a quick smoke test before setting an API key?
 
 ```bash
-cargo run --bin loopy-admin -- status
+cargo run --bin reloopy-admin -- status
 ```
 
-## Core features
+## How the self-evolution loop works
 
 ### 1. Source-level self-evolution
 
@@ -113,7 +112,7 @@ This is implemented directly in the codebase, not promised as a future abstracti
 
 ### 2. Minimal immutable Boot microkernel
 
-`loopy-boot` keeps the trusted core intentionally small:
+`reloopy-boot` keeps the trusted core intentionally small:
 
 - IPC routing over Unix domain sockets
 - process supervision via lease renewals
@@ -145,16 +144,16 @@ All major pieces are plain Rust crates in one workspace. You can inspect the rul
 | `DEEPSEEK_API_KEY` | Required for the peripheral LLM client |
 | `DEEPSEEK_BASE_URL` | Optional override for the DeepSeek API base URL |
 | `DEEPSEEK_MODEL` | Optional model override |
-| `LOOPY_WORKSPACE` | Points the peripheral to the workspace it may inspect and stage |
-| `LOOPY_SOCKET` | Overrides the Unix socket path (default: `~/.loopy/loopy.sock`) |
-| `LOOPY_HTTP_PORT` | Overrides the local web UI port (default: `7700`) |
+| `RELOOPY_WORKSPACE` | Points the peripheral to the workspace it may inspect and stage |
+| `RELOOPY_SOCKET` | Overrides the Unix socket path (default: `~/.reloopy/reloopy.sock`) |
+| `RELOOPY_HTTP_PORT` | Overrides the local web UI port (default: `7700`) |
 | `RUST_LOG` | Controls tracing verbosity |
 
 ### Key on-disk paths
 
-- Socket: `~/.loopy/loopy.sock`
-- State: `~/.loopy/state/`
-- Peripheral versions: `~/.loopy/peripheral/vNNN/`
+- Socket: `~/.reloopy/reloopy.sock`
+- State: `~/.reloopy/state/`
+- Peripheral versions: `~/.reloopy/peripheral/vNNN/`
 - Constitution: `./constitution/`
 - Design doc: [`plan.md`](./plan.md) (Chinese)
 
@@ -179,10 +178,10 @@ curl -N http://127.0.0.1:7700/api/chat \
 ### Admin CLI
 
 ```bash
-cargo run --bin loopy-admin -- status
-cargo run --bin loopy-admin -- peers
-cargo run --bin loopy-admin -- versions
-cargo run --bin loopy-admin -- runlevel
+cargo run --bin reloopy-admin -- status
+cargo run --bin reloopy-admin -- peers
+cargo run --bin reloopy-admin -- versions
+cargo run --bin reloopy-admin -- runlevel
 ```
 
 ### Repository layout
@@ -199,19 +198,6 @@ constitution/              invariants, benchmarks, amendment log
 protocol/                  protocol definitions
 plan.md                    detailed design document (Chinese)
 ```
-
-## Why VibeClaw instead of another agent framework?
-
-Because sometimes the best feature is **not shipping one more feature**.
-
-VibeClaw aims to stay small, inspectable, and editable enough that you can:
-
-- evolve the assistant you actually want
-- avoid paying for roadmap bloat you do not need
-- keep the trusted core small
-- choose your own balance of power and safety
-
-That combination — **self-evolutionary, powerful, yet intentionally minimal** — is the project's real thesis.
 
 ## Contributing
 
