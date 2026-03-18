@@ -1339,6 +1339,8 @@ impl Microkernel {
             if let Err(e) = child.kill().await {
                 tracing::warn!(pid = ?pid, "Failed to kill peripheral process: {}", e);
             } else {
+                // Wait for the process to fully exit and release resources (e.g. bound ports)
+                let _ = child.wait().await;
                 tracing::info!(pid = ?pid, "Peripheral process killed");
             }
         }
@@ -1374,14 +1376,9 @@ impl Microkernel {
                     // Extract and kill the child from WaitingForNewHandshake state
                     let old_state = std::mem::replace(&mut self.hot_swap, HotSwapState::Idle);
                     if let HotSwapState::WaitingForNewHandshake { child, .. } = old_state {
-                        if let Some(mut child) = child {
-                            let pid = child.id();
-                            tracing::info!(pid = ?pid, "Killing failed new peripheral process");
-                            if let Err(e) = child.kill().await {
-                                tracing::warn!(pid = ?pid, "Failed to kill new peripheral: {}", e);
-                            }
-                        }
+                        self.peripheral_child = child;
                     }
+                    self.kill_peripheral_process().await;
 
                     if let Err(e) = self.version_manager.rollback() {
                         tracing::error!("Rollback failed: {}", e);
