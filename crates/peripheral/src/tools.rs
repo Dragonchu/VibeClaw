@@ -108,6 +108,18 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
         ToolDefinition {
             type_: "function".to_string(),
             function: FunctionDefinition {
+                name: "memory_get_long_term".to_string(),
+                description: "Read the full contents of MEMORY.md. Call this before memory_write so you can merge new facts with the existing content.".to_string(),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": {},
+                    "required": []
+                }),
+            },
+        },
+        ToolDefinition {
+            type_: "function".to_string(),
+            function: FunctionDefinition {
                 name: "memory_write".to_string(),
                 description: "Overwrite MEMORY.md with new long-term facts. Use this to update curated, persistent knowledge that should survive across sessions.".to_string(),
                 parameters: serde_json::json!({
@@ -194,6 +206,13 @@ pub fn execute_tool(name: &str, arguments: &str, source: &mut SourceManager, mem
                 Err(e) => ToolResult::Output(format!("Error: {}", e)),
             }
         }
+        "memory_get_long_term" => match memory.get_long_term() {
+            Ok(content) if content.is_empty() => {
+                ToolResult::Output("MEMORY.md is empty.".to_string())
+            }
+            Ok(content) => ToolResult::Output(content),
+            Err(e) => ToolResult::Output(format!("Error: {}", e)),
+        },
         "memory_write" => {
             let content = args["content"].as_str().unwrap_or("");
             match memory.write_long_term(content) {

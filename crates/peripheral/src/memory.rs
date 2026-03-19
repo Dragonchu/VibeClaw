@@ -4,9 +4,11 @@
 //! - Long-term:   ~/.reloopy/memory/MEMORY.md  (curated facts, injected into system prompt)
 //! - Short-term:  ~/.reloopy/memory/YYYY-MM-DD.md  (append-only daily logs)
 //!
-//! Tools exposed to the agent: memory_search, memory_get, memory_write, memory_append.
+//! Tools exposed to the agent: memory_search, memory_get, memory_get_long_term,
+//! memory_write, memory_append.
 
-use std::fs;
+use std::fs::{self, OpenOptions};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 pub struct MemoryManager {
@@ -84,30 +86,50 @@ impl MemoryManager {
     }
 
     /// Append a timestamped entry to today's daily log.
+    ///
+    /// Uses `OpenOptions` append mode to avoid reading the full file on every
+    /// write. The header line is written only when the file is first created.
     pub fn append_daily(&self, content: &str) -> Result<(), String> {
         self.ensure_dir()?;
         let today = Self::today();
         let path = self.daily_path(&today);
 
+        let needs_header = !path.exists();
+
+        let mut file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .map_err(|e| format!("Failed to open daily log: {}", e))?;
+
+        if needs_header {
+            writeln!(file, "# Daily Log — {}\n", today)
+                .map_err(|e| format!("Failed to write log header: {}", e))?;
+        }
+
         let now = current_time_string();
-        let entry = format!("### {}\n\n{}\n\n", now, content.trim());
-
-        let existing = if path.exists() {
-            fs::read_to_string(&path).map_err(|e| format!("Failed to read daily log: {}", e))?
-        } else {
-            format!("# Daily Log — {}\n\n", today)
-        };
-
-        fs::write(&path, format!("{}{}", existing, entry))
+        write!(file, "### {}\n\n{}\n\n", now, content.trim())
             .map_err(|e| format!("Failed to write daily log: {}", e))
     }
 
     /// Get a daily log by date key: "today", "yesterday", or "YYYY-MM-DD".
+    ///
+    /// Rejects any date that is not one of the canonical keywords or a strict
+    /// `YYYY-MM-DD` string, preventing path traversal via `..` segments or
+    /// other unexpected inputs.
     pub fn get_daily(&self, date: &str) -> Result<String, String> {
         let date_str = match date.trim() {
             "" | "today" => Self::today(),
             "yesterday" => Self::yesterday(),
-            s => s.to_string(),
+            s => {
+                if !is_valid_date(s) {
+                    return Err(format!(
+                        "Invalid date '{}'. Use \"today\", \"yesterday\", or YYYY-MM-DD.",
+                        s
+                    ));
+                }
+                s.to_string()
+            }
         };
         let path = self.daily_path(&date_str);
         if !path.exists() {
@@ -143,7 +165,8 @@ impl MemoryManager {
             if path.extension().and_then(|e| e.to_str()) != Some("md") {
                 continue;
             }
-            let content = fs::read_to_string(&path).unwrap_or_default();
+            let content = fs::read_to_string(&path)
+                .map_err(|e| format!("Failed to read {}: {}", path.display(), e))?;
             let filename = path
                 .file_name()
                 .and_then(|n| n.to_str())
@@ -167,8 +190,18 @@ impl MemoryManager {
             return Ok(format!("No results found for: {}", query));
         }
 
-        // Sort by relevance descending; MEMORY.md sorts before dated logs on ties.
-        results.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+        // Sort by relevance descending; on ties MEMORY.md sorts before dated logs.
+        results.sort_by(|a, b| {
+            b.0.cmp(&a.0).then_with(|| {
+                let a_is_memory = a.1 == "MEMORY.md";
+                let b_is_memory = b.1 == "MEMORY.md";
+                match (b_is_memory, a_is_memory) {
+                    (true, false) => std::cmp::Ordering::Greater,
+                    (false, true) => std::cmp::Ordering::Less,
+                    _ => a.1.cmp(&b.1),
+                }
+            })
+        });
         results.truncate(10);
 
         let mut output = format!("Memory search results for \"{}\"\n\n", query);
@@ -184,6 +217,20 @@ impl MemoryManager {
 }
 
 // ── date / time helpers ──────────────────────────────────────────────────────
+
+/// Returns `true` iff `s` is exactly a `YYYY-MM-DD` string with all-digit
+/// year/month/day segments. This guards against path traversal via `..`.
+fn is_valid_date(s: &str) -> bool {
+    if s.len() != 10 {
+        return false;
+    }
+    let b = s.as_bytes();
+    b[4] == b'-'
+        && b[7] == b'-'
+        && b[..4].iter().all(|c| c.is_ascii_digit())
+        && b[5..7].iter().all(|c| c.is_ascii_digit())
+        && b[8..10].iter().all(|c| c.is_ascii_digit())
+}
 
 fn date_string(days_back: u64) -> String {
     let secs = std::time::SystemTime::now()
@@ -404,4 +451,57 @@ mod tests {
         let result = mgr.get_daily("yesterday").unwrap();
         assert!(result.contains("Yesterday content."));
     }
+
+    #[test]
+    fn get_daily_rejects_path_traversal() {
+        let (_dir, mgr) = temp_mgr();
+        let err = mgr.get_daily("../../etc/passwd").unwrap_err();
+        assert!(err.contains("Invalid date"), "got: {}", err);
+    }
+
+    #[test]
+    fn get_daily_rejects_arbitrary_string() {
+        let (_dir, mgr) = temp_mgr();
+        let err = mgr.get_daily("not-a-date").unwrap_err();
+        assert!(err.contains("Invalid date"), "got: {}", err);
+    }
+
+    #[test]
+    fn get_daily_accepts_valid_date_format() {
+        let (_dir, mgr) = temp_mgr();
+        // Non-existent date returns graceful message, not an error
+        let result = mgr.get_daily("2024-06-15").unwrap();
+        assert!(result.contains("No log found"), "got: {}", result);
+    }
+
+    #[test]
+    fn is_valid_date_correct() {
+        assert!(is_valid_date("2024-01-15"));
+        assert!(is_valid_date("1970-01-01"));
+        assert!(!is_valid_date("../../etc"));
+        assert!(!is_valid_date("not-a-date"));
+        assert!(!is_valid_date("2024-1-1"));
+        assert!(!is_valid_date("2024/01/15"));
+        assert!(!is_valid_date("20240115"));
+    }
+
+    #[test]
+    fn search_memory_md_sorts_first_on_equal_score() {
+        let (_dir, mgr) = temp_mgr();
+        // Write the same keyword to both long-term and a daily log
+        mgr.write_long_term("keyword fact").unwrap();
+        mgr.append_daily("keyword note").unwrap();
+        let result = mgr.search("keyword").unwrap();
+        // MEMORY.md result should appear before the dated log
+        let mem_pos = result.find("MEMORY.md").unwrap_or(usize::MAX);
+        let date_pos = result
+            .find(&MemoryManager::today())
+            .unwrap_or(usize::MAX);
+        assert!(
+            mem_pos < date_pos,
+            "MEMORY.md should appear before dated log; result:\n{}",
+            result
+        );
+    }
 }
+

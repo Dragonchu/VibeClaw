@@ -16,7 +16,8 @@ const BASE_SYSTEM_PROMPT: &str = r#"You are Reloopy, a self-evolving AI agent wr
 ## Memory Tools
 - memory_search(query): Search across all memory files for relevant content.
 - memory_get(date): Get a daily log. date = "today" | "yesterday" | "YYYY-MM-DD".
-- memory_write(content): Overwrite MEMORY.md with updated long-term facts. Always call memory_get or memory_search first to read existing content, then merge and rewrite the full document.
+- memory_get_long_term(): Read the full MEMORY.md. Always call this before memory_write to safely merge updates.
+- memory_write(content): Overwrite MEMORY.md with updated long-term facts. Always call memory_get_long_term first to read existing content, then merge and rewrite the full document.
 - memory_append(content): Append a note to today's daily log.
 
 ## Guidelines
