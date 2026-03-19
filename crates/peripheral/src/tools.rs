@@ -161,11 +161,27 @@ pub enum ToolResult {
 }
 
 pub fn execute_tool(name: &str, arguments: &str, source: &mut SourceManager, memory: &mut MemoryManager) -> ToolResult {
-    let args: serde_json::Value = serde_json::from_str(arguments).unwrap_or_default();
+    let args: serde_json::Value = match serde_json::from_str(arguments) {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::warn!(tool = %name, raw_arguments = %arguments, error = %e, "Failed to parse tool arguments");
+            return ToolResult::Output(format!(
+                "Error: Failed to parse arguments as JSON: {}. Raw arguments: {}",
+                e, arguments
+            ));
+        }
+    };
 
     match name {
         "read_source_file" => {
             let path = args["path"].as_str().unwrap_or("");
+            if path.is_empty() {
+                tracing::warn!(tool = %name, raw_arguments = %arguments, "Missing required 'path' parameter");
+                return ToolResult::Output(
+                    "Error: 'path' parameter is required but was empty or missing. \
+                     Please provide a relative file path like 'src/main.rs'.".to_string()
+                );
+            }
             match source.read_file(path) {
                 Ok(content) => ToolResult::Output(content),
                 Err(e) => ToolResult::Output(format!("Error: {}", e)),
@@ -181,6 +197,13 @@ pub fn execute_tool(name: &str, arguments: &str, source: &mut SourceManager, mem
         "write_source_file" => {
             let path = args["path"].as_str().unwrap_or("");
             let content = args["content"].as_str().unwrap_or("");
+            if path.is_empty() {
+                tracing::warn!(tool = %name, raw_arguments = %arguments, "Missing required 'path' parameter");
+                return ToolResult::Output(
+                    "Error: 'path' parameter is required but was empty or missing. \
+                     Please provide a relative file path like 'src/main.rs'.".to_string()
+                );
+            }
             match source.write_file(path, content) {
                 Ok(()) => ToolResult::Output(format!("Written: {}", path)),
                 Err(e) => ToolResult::Output(format!("Error: {}", e)),
@@ -228,5 +251,143 @@ pub fn execute_tool(name: &str, arguments: &str, source: &mut SourceManager, mem
             }
         }
         _ => ToolResult::Output(format!("Unknown tool: {}", name)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    fn temp_tools() -> (tempfile::TempDir, SourceManager, MemoryManager) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let peripheral = dir.path().join("crates").join("peripheral");
+        fs::create_dir_all(peripheral.join("src")).expect("create src dir");
+        let source = SourceManager::new(dir.path().to_path_buf());
+        let mem_dir = dir.path().join("memory");
+        fs::create_dir_all(&mem_dir).expect("create memory dir");
+        let memory = MemoryManager::new(&mem_dir);
+        (dir, source, memory)
+    }
+
+    #[test]
+    fn write_source_file_with_empty_arguments_returns_path_error() {
+        let (_dir, mut source, mut memory) = temp_tools();
+        let result = execute_tool("write_source_file", "", &mut source, &mut memory);
+        match result {
+            ToolResult::Output(msg) => {
+                assert!(
+                    msg.contains("Failed to parse arguments"),
+                    "expected JSON parse error, got: {}",
+                    msg
+                );
+            }
+            other => panic!("expected Output, got: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn write_source_file_with_missing_path_returns_error() {
+        let (_dir, mut source, mut memory) = temp_tools();
+        let result = execute_tool(
+            "write_source_file",
+            r#"{"content": "fn main() {}"}"#,
+            &mut source,
+            &mut memory,
+        );
+        match result {
+            ToolResult::Output(msg) => {
+                assert!(
+                    msg.contains("'path' parameter is required"),
+                    "expected missing path error, got: {}",
+                    msg
+                );
+            }
+            other => panic!("expected Output, got: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn write_source_file_with_valid_arguments_succeeds() {
+        let (_dir, mut source, mut memory) = temp_tools();
+        let result = execute_tool(
+            "write_source_file",
+            r#"{"path": "src/test.rs", "content": "fn main() {}"}"#,
+            &mut source,
+            &mut memory,
+        );
+        match result {
+            ToolResult::Output(msg) => {
+                assert!(
+                    msg.contains("Written: src/test.rs"),
+                    "expected success, got: {}",
+                    msg
+                );
+            }
+            other => panic!("expected Output, got: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn read_source_file_with_empty_path_returns_error() {
+        let (_dir, mut source, mut memory) = temp_tools();
+        let result = execute_tool(
+            "read_source_file",
+            r#"{"path": ""}"#,
+            &mut source,
+            &mut memory,
+        );
+        match result {
+            ToolResult::Output(msg) => {
+                assert!(
+                    msg.contains("'path' parameter is required"),
+                    "expected missing path error, got: {}",
+                    msg
+                );
+            }
+            other => panic!("expected Output, got: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn read_source_file_with_missing_path_returns_error() {
+        let (_dir, mut source, mut memory) = temp_tools();
+        let result = execute_tool("read_source_file", r#"{}"#, &mut source, &mut memory);
+        match result {
+            ToolResult::Output(msg) => {
+                assert!(
+                    msg.contains("'path' parameter is required"),
+                    "expected missing path error, got: {}",
+                    msg
+                );
+            }
+            other => panic!("expected Output, got: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn invalid_json_arguments_returns_parse_error() {
+        let (_dir, mut source, mut memory) = temp_tools();
+        let result = execute_tool(
+            "write_source_file",
+            "not valid json",
+            &mut source,
+            &mut memory,
+        );
+        match result {
+            ToolResult::Output(msg) => {
+                assert!(
+                    msg.contains("Failed to parse arguments"),
+                    "expected parse error, got: {}",
+                    msg
+                );
+                assert!(
+                    msg.contains("not valid json"),
+                    "expected raw arguments in error, got: {}",
+                    msg
+                );
+            }
+            other => panic!("expected Output, got: {:?}", other),
+        }
     }
 }
