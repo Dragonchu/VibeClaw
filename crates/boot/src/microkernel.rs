@@ -585,9 +585,9 @@ impl Microkernel {
 
         let compile_req = messages::CompileRequest {
             version: version_info.version.clone(),
-            source_path: version_info.source_dir.to_string_lossy().to_string(),
+            source_path: version_info.build_dir.to_string_lossy().to_string(),
             output_path: version_info
-                .source_dir
+                .build_dir
                 .join("target")
                 .to_string_lossy()
                 .to_string(),
@@ -641,6 +641,7 @@ impl Microkernel {
 
         if !result.success {
             tracing::warn!(version = %result.version, "Compilation failed");
+            self.version_manager.cleanup_worktree(&result.version);
             let locked = self.version_manager.record_failure();
             if locked {
                 tracing::error!("Version manager locked after consecutive failures");
@@ -683,6 +684,9 @@ impl Microkernel {
                 }
             }
         }
+
+        // Build worktree is no longer needed after binary extraction.
+        self.version_manager.cleanup_worktree(&result.version);
 
         let binary_path = self.version_manager.binary_path().to_string_lossy().to_string();
 
