@@ -563,12 +563,12 @@ impl Microkernel {
         let source_path = PathBuf::from(&submit.source_path);
         if let Err(e) = self
             .version_manager
-            .copy_source(&source_path, &version_info.source_dir)
+            .commit_version_source(&version_info, &source_path)
         {
-            tracing::error!("Failed to copy source: {}", e);
+            tracing::error!(version = %version_info.version, "Failed to copy and commit source: {}", e);
             let rejected = messages::UpdateRejected {
                 version: version_info.version,
-                reason: format!("Failed to copy source: {}", e),
+                reason: format!("Failed to copy and commit source: {}", e),
                 errors: None,
                 ..Default::default()
             };
@@ -581,10 +581,6 @@ impl Microkernel {
             };
             let _ = router.send(response).await;
             return;
-        }
-
-        if let Err(e) = self.version_manager.commit_version_source(&version_info) {
-            tracing::warn!(version = %version_info.version, "Failed to commit source to git (non-fatal): {}", e);
         }
 
         let compile_req = messages::CompileRequest {
