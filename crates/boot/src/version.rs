@@ -446,14 +446,22 @@ impl VersionManager {
         let wt_dir = self.worktree_dir(&version_info.version);
 
         // Prune stale worktree bookkeeping entries left by a previous crash.
-        let _ = Command::new("git")
+        if let Ok(o) = Command::new("git")
             .args(["worktree", "prune"])
             .current_dir(&self.source_dir)
-            .output();
+            .output()
+        {
+            if !o.status.success() {
+                tracing::debug!(
+                    "git worktree prune failed: {}",
+                    String::from_utf8_lossy(&o.stderr)
+                );
+            }
+        }
 
         // Remove an existing worktree for this version (previous failed attempt).
         if wt_dir.exists() {
-            let _ = Command::new("git")
+            let remove_ok = Command::new("git")
                 .args([
                     "worktree",
                     "remove",
@@ -461,8 +469,13 @@ impl VersionManager {
                     &wt_dir.to_string_lossy().to_string(),
                 ])
                 .current_dir(&self.source_dir)
-                .output();
-            if wt_dir.exists() {
+                .output()
+                .is_ok_and(|o| o.status.success());
+            if !remove_ok && wt_dir.exists() {
+                tracing::warn!(
+                    path = %wt_dir.display(),
+                    "git worktree remove failed; falling back to manual removal"
+                );
                 let _ = fs::remove_dir_all(&wt_dir);
             }
         }
@@ -541,7 +554,7 @@ impl VersionManager {
     fn cleanup_worktree_internal(&self, version: &str) {
         let wt_dir = self.worktree_dir(version);
         if wt_dir.exists() {
-            let _ = Command::new("git")
+            let remove_ok = Command::new("git")
                 .args([
                     "worktree",
                     "remove",
@@ -549,16 +562,30 @@ impl VersionManager {
                     &wt_dir.to_string_lossy().to_string(),
                 ])
                 .current_dir(&self.source_dir)
-                .output();
+                .output()
+                .is_ok_and(|o| o.status.success());
             // Fallback: manual removal if git failed.
-            if wt_dir.exists() {
+            if !remove_ok && wt_dir.exists() {
+                tracing::warn!(
+                    version = %version,
+                    path = %wt_dir.display(),
+                    "git worktree remove failed; falling back to manual removal"
+                );
                 let _ = fs::remove_dir_all(&wt_dir);
             }
         }
-        let _ = Command::new("git")
+        if let Ok(o) = Command::new("git")
             .args(["worktree", "prune"])
             .current_dir(&self.source_dir)
-            .output();
+            .output()
+        {
+            if !o.status.success() {
+                tracing::debug!(
+                    "git worktree prune failed: {}",
+                    String::from_utf8_lossy(&o.stderr)
+                );
+            }
+        }
     }
 
     /// Copy source files from `from` into the target directory `to`.
@@ -625,16 +652,32 @@ impl VersionManager {
 
         // Explicitly clean the working tree before switching branches.
         // 1. Discard modifications to tracked files.
-        let _ = Command::new("git")
+        if let Ok(o) = Command::new("git")
             .args(["checkout", "--", "."])
             .current_dir(&self.source_dir)
-            .output();
+            .output()
+        {
+            if !o.status.success() {
+                tracing::warn!(
+                    "Failed to discard tracked modifications: {}",
+                    String::from_utf8_lossy(&o.stderr)
+                );
+            }
+        }
         // 2. Remove untracked files (e.g. Cargo.lock from a previous
         //    build).  Preserve `target/` for the incremental build cache.
-        let _ = Command::new("git")
+        if let Ok(o) = Command::new("git")
             .args(["clean", "-fd", "-e", "target/"])
             .current_dir(&self.source_dir)
-            .output();
+            .output()
+        {
+            if !o.status.success() {
+                tracing::warn!(
+                    "Failed to clean untracked files: {}",
+                    String::from_utf8_lossy(&o.stderr)
+                );
+            }
+        }
 
         let o = Command::new("git")
             .args(["checkout", version])
@@ -678,14 +721,30 @@ impl VersionManager {
         self.cleanup_worktree_internal(&rollback_version);
 
         // Explicitly clean the working tree before switching branches.
-        let _ = Command::new("git")
+        if let Ok(o) = Command::new("git")
             .args(["checkout", "--", "."])
             .current_dir(&self.source_dir)
-            .output();
-        let _ = Command::new("git")
+            .output()
+        {
+            if !o.status.success() {
+                tracing::warn!(
+                    "Rollback: failed to discard tracked modifications: {}",
+                    String::from_utf8_lossy(&o.stderr)
+                );
+            }
+        }
+        if let Ok(o) = Command::new("git")
             .args(["clean", "-fd", "-e", "target/"])
             .current_dir(&self.source_dir)
-            .output();
+            .output()
+        {
+            if !o.status.success() {
+                tracing::warn!(
+                    "Rollback: failed to clean untracked files: {}",
+                    String::from_utf8_lossy(&o.stderr)
+                );
+            }
+        }
 
         let o = Command::new("git")
             .args(["checkout", &rollback_version])
