@@ -366,7 +366,9 @@ impl VersionManager {
 
     /// Allocate a new version branch from the current HEAD **without**
     /// switching to it.  The caller should then call
-    /// `commit_version_source` which handles checkout, copy, and commit.
+    /// `commit_version_source(version_info, source_from)` which checks
+    /// out the new branch, copies source files, commits, and restores
+    /// the previous branch.
     ///
     /// HEAD remains on the previously active branch so that
     /// `current_version()` continues to report the old version during
@@ -527,7 +529,10 @@ impl VersionManager {
     /// except `.git` and `target` so that stale files from a previous
     /// version do not leak into the new one.  Then recursively copies
     /// from `from`, also skipping `.git` and `target`.
-    pub fn copy_source(&self, from: &Path, to: &Path) -> Result<(), String> {
+    ///
+    /// This is called internally by `commit_version_source` after
+    /// checking out the target branch.
+    fn copy_source(&self, from: &Path, to: &Path) -> Result<(), String> {
         // Clean destination: remove everything except .git and target.
         clean_dir_except(to, &[".git", "target"]).map_err(|e| {
             format!(
