@@ -182,10 +182,48 @@ impl Agent {
     }
 }
 
-fn truncate(s: &str, max: usize) -> String {
-    if s.len() <= max {
+fn truncate(s: &str, max_bytes: usize) -> String {
+    if s.len() <= max_bytes {
         s.to_string()
     } else {
-        format!("{}...(truncated)", &s[..max])
+        let end = s.floor_char_boundary(max_bytes);
+        format!("{}...(truncated)", &s[..end])
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn truncate_short_string_unchanged() {
+        assert_eq!(truncate("hello", 500), "hello");
+    }
+
+    #[test]
+    fn truncate_ascii_at_boundary() {
+        let s = "a".repeat(600);
+        let result = truncate(&s, 500);
+        assert!(result.starts_with(&"a".repeat(500)));
+        assert!(result.ends_with("...(truncated)"));
+    }
+
+    #[test]
+    fn truncate_multibyte_utf8_does_not_panic() {
+        // "代理" is 2 chars, each 3 bytes in UTF-8; repeated 100 times = 200 chars, 600 bytes.
+        // Truncates at a valid UTF-8 boundary when byte limit falls mid-character.
+        let s: String = "代理".repeat(100);
+        let result = truncate(&s, 500);
+        assert!(result.ends_with("...(truncated)"));
+        assert!(result.len() < 600);
+    }
+
+    #[test]
+    fn truncate_mixed_content() {
+        // Mix of ASCII and multi-byte characters
+        let s = format!("{}{}", "a".repeat(498), "代理代理");
+        let result = truncate(&s, 500);
+        // Should truncate safely, including 498 ASCII bytes + up to boundary
+        assert!(result.ends_with("...(truncated)"));
     }
 }

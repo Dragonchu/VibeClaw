@@ -64,9 +64,9 @@ enum RunlevelAction {
 }
 
 fn expand_socket_path(path: &str) -> PathBuf {
-    if path.starts_with("~/") {
+    if let Some(rest) = path.strip_prefix("~/") {
         if let Ok(home) = std::env::var("HOME") {
-            return PathBuf::from(home).join(&path[2..]);
+            return PathBuf::from(home).join(rest);
         }
     }
     PathBuf::from(path)
