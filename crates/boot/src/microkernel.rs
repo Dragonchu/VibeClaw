@@ -595,7 +595,7 @@ impl Microkernel {
             version: version_info.version.clone(),
             source_path: version_info.source_dir.to_string_lossy().to_string(),
             output_path: version_info
-                .dir
+                .source_dir
                 .join("target")
                 .to_string_lossy()
                 .to_string(),
@@ -675,12 +675,7 @@ impl Microkernel {
 
         if let Some(binary_path_str) = &result.binary_path {
             let binary_path = PathBuf::from(binary_path_str);
-            let version_dir = self
-                .config
-                .base_dir
-                .join("peripheral")
-                .join(&result.version);
-            let target_binary = version_dir.join("binary");
+            let target_binary = self.version_manager.binary_path().to_path_buf();
 
             if binary_path.exists() {
                 if let Err(e) = std::fs::copy(&binary_path, &target_binary) {
@@ -697,12 +692,7 @@ impl Microkernel {
             }
         }
 
-        let version_dir = self
-            .config
-            .base_dir
-            .join("peripheral")
-            .join(&result.version);
-        let binary_path = version_dir.join("binary").to_string_lossy().to_string();
+        let binary_path = self.version_manager.binary_path().to_string_lossy().to_string();
 
         let test_req = messages::TestRequest {
             version: result.version.clone(),
@@ -772,11 +762,8 @@ impl Microkernel {
                 self.probation = Some(ProbationState {
                     version: result.version.clone(),
                     binary_path: self
-                        .config
-                        .base_dir
-                        .join("peripheral")
-                        .join(&result.version)
-                        .join("binary")
+                        .version_manager
+                        .binary_path()
                         .to_string_lossy()
                         .to_string(),
                     started_at: Instant::now(),
@@ -1006,12 +993,7 @@ impl Microkernel {
         )
         .await;
 
-        let new_binary = self
-            .config
-            .base_dir
-            .join("peripheral")
-            .join(new_version)
-            .join("binary");
+        let new_binary = self.version_manager.binary_path().to_path_buf();
 
         if new_binary.exists() {
             tracing::info!(
@@ -1307,12 +1289,7 @@ impl Microkernel {
         binary_path: &PathBuf,
         version: &str,
     ) -> Result<tokio::process::Child, Box<dyn std::error::Error>> {
-        let source_dir = self
-            .config
-            .base_dir
-            .join("peripheral")
-            .join(version)
-            .join("source");
+        let source_dir = self.version_manager.source_dir().to_path_buf();
 
         let child = tokio::process::Command::new(binary_path)
             .env("RELOOPY_WORKSPACE", &source_dir)
@@ -1384,12 +1361,7 @@ impl Microkernel {
                         tracing::error!("Rollback failed: {}", e);
                     } else {
                         tracing::info!(version = %ov, "Rolled back to previous version");
-                        let rollback_binary = self
-                            .config
-                            .base_dir
-                            .join("peripheral")
-                            .join(&ov)
-                            .join("binary");
+                        let rollback_binary = self.version_manager.binary_path().to_path_buf();
 
                         if rollback_binary.exists() {
                             match self.spawn_peripheral(&rollback_binary, &ov).await {

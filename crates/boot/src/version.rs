@@ -1,3 +1,12 @@
+//! Git-branch-based version management.
+//!
+//! All versions are branches (V1, V2, V3 …) in a single normal git
+//! repository at `peripheral/source/`.  The current version is simply
+//! the checked-out branch; rollback is a `git checkout` to the
+//! previous branch.  Binary is stored at a fixed path
+//! `peripheral/binary`.
+//! See plan §2.2.
+
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -6,132 +15,115 @@ const MAX_CONSECUTIVE_FAILURES: u32 = 3;
 
 #[derive(Debug)]
 pub struct VersionManager {
+    /// `~/.reloopy/peripheral`
     base_dir: PathBuf,
-    git_dir: PathBuf,
+    /// `~/.reloopy/peripheral/source` — the single git repo
+    source_dir: PathBuf,
+    /// `~/.reloopy/peripheral/binary` — fixed binary path
+    binary_path: PathBuf,
     consecutive_failures: u32,
     locked: bool,
+    /// Tracks the previous version for rollback (set on `switch_to`).
+    rollback_branch: Option<String>,
 }
 
+/// Information about a newly allocated version.
 #[derive(Debug, Clone)]
 pub struct VersionInfo {
     pub version: String,
-    pub dir: PathBuf,
+    /// The single source directory (`peripheral/source/`).
     pub source_dir: PathBuf,
+    /// Fixed binary path (`peripheral/binary`).
     pub binary_path: PathBuf,
-    pub manifest_path: PathBuf,
 }
 
 impl VersionManager {
     pub fn new(base_dir: &Path) -> Self {
         let peripheral = base_dir.join("peripheral");
-        let git_dir = peripheral.join("git");
+        let source_dir = peripheral.join("source");
+        let binary_path = peripheral.join("binary");
         Self {
             base_dir: peripheral,
-            git_dir,
+            source_dir,
+            binary_path,
             consecutive_failures: 0,
             locked: false,
+            rollback_branch: None,
         }
     }
+
+    // -- helpers ----------------------------------------------------------
 
     fn ensure_dirs(&self) -> std::io::Result<()> {
         fs::create_dir_all(&self.base_dir)
     }
 
-    /// Read the current active version name from the `current` text file.
-    pub fn current_version(&self) -> Option<String> {
-        let current_file = self.base_dir.join("current");
-        if !current_file.exists() {
-            return None;
-        }
-        fs::read_to_string(&current_file)
-            .ok()
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty())
+    /// Return the path to the single source repo.
+    pub fn source_dir(&self) -> &Path {
+        &self.source_dir
     }
 
-    /// Read the rollback version name from the `rollback` text file.
-    pub fn rollback_version(&self) -> Option<String> {
-        let rollback_file = self.base_dir.join("rollback");
-        if !rollback_file.exists() {
-            return None;
-        }
-        fs::read_to_string(&rollback_file)
-            .ok()
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty())
+    /// Return the fixed binary path.
+    pub fn binary_path(&self) -> &Path {
+        &self.binary_path
     }
 
-    fn next_version_number(&self) -> u32 {
-        let mut max = 0u32;
-        if let Ok(entries) = fs::read_dir(&self.base_dir) {
-            for entry in entries.flatten() {
-                let name = entry.file_name().to_string_lossy().to_string();
-                if let Some(stripped) = name.strip_prefix('V') {
-                    if let Ok(num) = stripped.parse::<u32>() {
-                        max = max.max(num);
-                    }
-                }
-            }
-        }
-        max + 1
-    }
-
-    /// Initialise the bare git repo at `base_dir/git/` if it does not already exist.
-    /// Also recovers from a partially initialised repo where `main` has no commits.
-    fn init_git_repo_if_needed(&self) -> Result<(), String> {
-        if self.git_dir.join("HEAD").exists() {
-            // Verify `main` branch actually exists (has at least one commit).
-            // A previous init may have created the bare repo but failed before
-            // committing, leaving HEAD present but `main` as a dangling ref.
+    /// Initialise a normal git repo at `source_dir` if it does not exist.
+    /// Also recovers from a partially initialised repo (no commits on `main`).
+    fn init_repo_if_needed(&self) -> Result<(), String> {
+        let git_internal = self.source_dir.join(".git");
+        if git_internal.exists() {
+            // Verify `main` branch has at least one commit.
             let check = Command::new("git")
                 .args(["rev-parse", "--verify", "refs/heads/main"])
-                .env("GIT_DIR", &self.git_dir)
+                .current_dir(&self.source_dir)
                 .output();
             match check {
-                Ok(o) if o.status.success() => return Ok(()), // Repo is healthy.
-                Ok(_) => {} // Non-zero exit — main branch missing.
+                Ok(o) if o.status.success() => return Ok(()),
+                Ok(_) => {
+                    tracing::warn!(
+                        source_dir = %self.source_dir.display(),
+                        "Git repo exists but 'main' branch is missing; re-initialising"
+                    );
+                    fs::remove_dir_all(&self.source_dir).map_err(|e| {
+                        format!(
+                            "Failed to remove stale repo at {}: {}",
+                            self.source_dir.display(),
+                            e
+                        )
+                    })?;
+                }
                 Err(e) => {
-                    tracing::debug!("git rev-parse to verify 'main' failed to run: {}", e);
+                    tracing::debug!("git rev-parse failed to run: {}", e);
+                    fs::remove_dir_all(&self.source_dir).map_err(|e| {
+                        format!("Failed to remove stale repo: {}", e)
+                    })?;
                 }
             }
-            // Stale bare repo — remove and re-create.
-            tracing::warn!(
-                git_dir = %self.git_dir.display(),
-                "Bare repo exists but 'main' branch is missing; re-initialising"
-            );
-            fs::remove_dir_all(&self.git_dir).map_err(|e| {
-                format!(
-                    "Failed to remove stale bare repo at {}: {}",
-                    self.git_dir.display(),
-                    e
-                )
-            })?;
         }
 
-        fs::create_dir_all(&self.git_dir)
-            .map_err(|e| format!("Failed to create git dir: {}", e))?;
+        fs::create_dir_all(&self.source_dir)
+            .map_err(|e| format!("Failed to create source dir: {}", e))?;
 
-        let out = Command::new("git")
-            .args(["init", "--bare"])
-            .arg(&self.git_dir)
+        let o = Command::new("git")
+            .args(["init", "-b", "main"])
+            .arg(&self.source_dir)
             .output()
-            .map_err(|e| format!("Failed to run git init --bare: {}", e))?;
-        if !out.status.success() {
+            .map_err(|e| format!("git init failed: {}", e))?;
+        if !o.status.success() {
             return Err(format!(
-                "git init --bare failed: {}",
-                String::from_utf8_lossy(&out.stderr)
+                "git init failed: {}",
+                String::from_utf8_lossy(&o.stderr)
             ));
         }
 
-        // Configure identity so commits succeed in CI / headless environments.
         for (key, value) in [
             ("user.name", "reloopy-boot"),
             ("user.email", "boot@reloopy.local"),
         ] {
             let o = Command::new("git")
-                .args(["config", "--file"])
-                .arg(self.git_dir.join("config"))
-                .args([key, value])
+                .args(["config", key, value])
+                .current_dir(&self.source_dir)
                 .output()
                 .map_err(|e| format!("git config failed: {}", e))?;
             if !o.status.success() {
@@ -143,86 +135,120 @@ impl VersionManager {
             }
         }
 
-        // Create an empty initial commit on `main` so later branches have a base.
-        // Avoid `git worktree add --orphan` which requires Git >= 2.38.
-        // Instead, use a temporary regular repo, commit there, then push into
-        // the bare repo.
-        let tmp = self.base_dir.join(".git_init_tmp");
-        let _ = fs::remove_dir_all(&tmp);
-
-        let o = Command::new("git")
-            .args(["init", "-b", "main"])
-            .arg(&tmp)
-            .output()
-            .map_err(|e| format!("git init (tmp) failed: {}", e))?;
-        if !o.status.success() {
-            let _ = fs::remove_dir_all(&tmp);
-            return Err(format!(
-                "git init (tmp) failed: {}",
-                String::from_utf8_lossy(&o.stderr)
-            ));
-        }
-
-        // Configure identity in the temp repo.
-        for (key, value) in [
-            ("user.name", "reloopy-boot"),
-            ("user.email", "boot@reloopy.local"),
-        ] {
-            let o = Command::new("git")
-                .args(["config", key, value])
-                .current_dir(&tmp)
-                .output()
-                .map_err(|e| format!("git config (tmp) failed: {}", e))?;
-            if !o.status.success() {
-                let _ = fs::remove_dir_all(&tmp);
-                return Err(format!(
-                    "git config {} (tmp) failed: {}",
-                    key,
-                    String::from_utf8_lossy(&o.stderr)
-                ));
-            }
-        }
-
         let o = Command::new("git")
             .args(["commit", "--allow-empty", "-m", "Initial commit"])
-            .current_dir(&tmp)
+            .current_dir(&self.source_dir)
             .output()
             .map_err(|e| format!("git commit (init) failed: {}", e))?;
         if !o.status.success() {
-            let _ = fs::remove_dir_all(&tmp);
             return Err(format!(
                 "git initial commit failed: {}",
                 String::from_utf8_lossy(&o.stderr)
             ));
         }
 
-        // Push the initial commit into the bare repo.
-        let o = Command::new("git")
-            .args(["push"])
-            .arg(&self.git_dir)
-            .args(["HEAD:refs/heads/main"])
-            .current_dir(&tmp)
-            .output()
-            .map_err(|e| {
-                let _ = fs::remove_dir_all(&tmp);
-                format!("git push (init) failed: {}", e)
-            })?;
+        tracing::info!(source_dir = %self.source_dir.display(), "Git repo initialised");
+        Ok(())
+    }
 
+    /// Determine the next V{N} number by inspecting existing branch names.
+    fn next_version_number(&self) -> u32 {
+        let output = Command::new("git")
+            .args(["branch", "--list", "V*", "--format=%(refname:short)"])
+            .current_dir(&self.source_dir)
+            .output();
+
+        let mut max = 0u32;
+        if let Ok(o) = output {
+            if o.status.success() {
+                let stdout = String::from_utf8_lossy(&o.stdout);
+                for line in stdout.lines() {
+                    let line = line.trim();
+                    if let Some(stripped) = line.strip_prefix('V') {
+                        if let Ok(num) = stripped.parse::<u32>() {
+                            max = max.max(num);
+                        }
+                    }
+                }
+            }
+        }
+        max + 1
+    }
+
+    // -- public API -------------------------------------------------------
+
+    /// Read the current active version from `git branch --show-current`.
+    /// Returns `None` if the repo does not exist or the current branch is
+    /// not a version branch.
+    pub fn current_version(&self) -> Option<String> {
+        if !self.source_dir.join(".git").exists() {
+            return None;
+        }
+        let o = Command::new("git")
+            .args(["branch", "--show-current"])
+            .current_dir(&self.source_dir)
+            .output()
+            .ok()?;
         if !o.status.success() {
-            let _ = fs::remove_dir_all(&tmp);
+            return None;
+        }
+        let branch = String::from_utf8_lossy(&o.stdout).trim().to_string();
+        if branch.starts_with('V') && branch[1..].parse::<u32>().is_ok() {
+            Some(branch)
+        } else {
+            None
+        }
+    }
+
+    /// Return the rollback version (the version that was active before the
+    /// most recent `switch_to`).
+    pub fn rollback_version(&self) -> Option<String> {
+        self.rollback_branch.clone()
+    }
+
+    /// Allocate a new version branch from the current branch, ready for
+    /// staging content.  The caller should then copy source into
+    /// `version_info.source_dir` and call `commit_version_source`.
+    pub fn allocate_version(&self) -> Result<VersionInfo, String> {
+        self.ensure_dirs()
+            .map_err(|e| format!("Failed to create peripheral dir: {}", e))?;
+
+        if self.locked {
+            return Err(
+                "Version manager is locked due to consecutive failures. Human intervention required."
+                    .to_string(),
+            );
+        }
+
+        self.init_repo_if_needed()?;
+
+        let num = self.next_version_number();
+        let version = format!("V{}", num);
+
+        // Create new branch from current HEAD.
+        let o = Command::new("git")
+            .args(["checkout", "-b", &version])
+            .current_dir(&self.source_dir)
+            .output()
+            .map_err(|e| format!("git checkout -b {} failed: {}", version, e))?;
+        if !o.status.success() {
             return Err(format!(
-                "git push initial commit to bare repo failed: {}",
+                "git checkout -b {} failed: {}",
+                version,
                 String::from_utf8_lossy(&o.stderr)
             ));
         }
 
-        let _ = fs::remove_dir_all(&tmp);
+        tracing::info!(version = %version, "New version branch created");
 
-        tracing::info!(git_dir = %self.git_dir.display(), "Git bare repo initialised");
-        Ok(())
+        Ok(VersionInfo {
+            version,
+            source_dir: self.source_dir.clone(),
+            binary_path: self.binary_path.clone(),
+        })
     }
 
-    /// Commit all source files in `version_info.source_dir` to branch `V{N}`.
+    /// Stage all files and commit on the current branch.
     /// Non-fatal: callers should log a warning on error but continue.
     pub fn commit_version_source(&self, version_info: &VersionInfo) -> Result<(), String> {
         let src = &version_info.source_dir;
@@ -256,128 +282,50 @@ impl VersionManager {
         Ok(())
     }
 
-    pub fn allocate_version(&self) -> Result<VersionInfo, String> {
-        self.ensure_dirs()
-            .map_err(|e| format!("Failed to create peripheral dir: {}", e))?;
+    /// Copy source files from `from` into the source repo, skipping `.git`
+    /// and `target` directories.
+    pub fn copy_source(&self, from: &Path, to: &Path) -> Result<(), String> {
+        copy_dir_recursive(from, to).map_err(|e| {
+            format!(
+                "Failed to copy source from {} to {}: {}",
+                from.display(),
+                to.display(),
+                e
+            )
+        })
+    }
 
-        if self.locked {
-            return Err(
-                "Version manager is locked due to consecutive failures. Human intervention required."
-                    .to_string(),
-            );
-        }
-
-        self.init_git_repo_if_needed()?;
-
-        // Prune stale worktree bookkeeping left by previously removed directories.
-        match Command::new("git")
-            .args(["worktree", "prune"])
-            .env("GIT_DIR", &self.git_dir)
+    /// Switch the repo to `version` branch.  Returns the previously active
+    /// version (empty string if there was none).
+    pub fn switch_to(&mut self, version: &str) -> Result<String, String> {
+        // Verify the branch exists.
+        let check = Command::new("git")
+            .args(["rev-parse", "--verify", &format!("refs/heads/{}", version)])
+            .current_dir(&self.source_dir)
             .output()
-        {
-            Ok(o) if !o.status.success() => {
-                tracing::debug!(
-                    "git worktree prune failed: {}",
-                    String::from_utf8_lossy(&o.stderr)
-                );
-            }
-            Err(e) => {
-                tracing::debug!("git worktree prune could not run: {}", e);
-            }
-            _ => {}
+            .map_err(|e| format!("git rev-parse failed: {}", e))?;
+        if !check.status.success() {
+            return Err(format!("Version branch does not exist: {}", version));
         }
 
-        let num = self.next_version_number();
-        let version = format!("V{}", num);
-        let dir = self.base_dir.join(&version);
-
-        fs::create_dir_all(&dir)
-            .map_err(|e| format!("Failed to create version dir {}: {}", dir.display(), e))?;
-
-        let source_dir = dir.join("source");
-
-        // Determine the base branch for the new worktree.
-        // For V1 the base is always `main`. For V2+ it is ideally V{num-1},
-        // but that branch may not exist if the previous allocation failed after
-        // creating the directory but before the worktree was set up. Walk
-        // backwards to find the most recent existing branch, falling back to
-        // `main`.
-        let base_branch = if num == 1 {
-            "main".to_string()
-        } else {
-            self.find_valid_base_branch(num - 1)
-        };
+        let old_version = self.current_version();
 
         let o = Command::new("git")
-            .args(["worktree", "add", "-b", &version])
-            .arg(&source_dir)
-            .arg(&base_branch)
-            .env("GIT_DIR", &self.git_dir)
+            .args(["checkout", version])
+            .current_dir(&self.source_dir)
             .output()
-            .map_err(|e| {
-                if let Err(re) = fs::remove_dir_all(&dir) {
-                    tracing::warn!(dir = %dir.display(), "Failed to clean up version dir after error: {}", re);
-                }
-                format!("git worktree add failed: {}", e)
-            })?;
+            .map_err(|e| format!("git checkout {} failed: {}", version, e))?;
         if !o.status.success() {
-            // Clean up the version directory so next_version_number() does not
-            // see a half-created version and skip over it.
-            if let Err(re) = fs::remove_dir_all(&dir) {
-                tracing::warn!(dir = %dir.display(), "Failed to clean up version dir after worktree failure: {}", re);
-            }
             return Err(format!(
-                "git worktree add for {} failed: {}",
+                "git checkout {} failed: {}",
                 version,
                 String::from_utf8_lossy(&o.stderr)
             ));
         }
 
-        tracing::info!(version = %version, "Git worktree created for new version");
-
-        Ok(VersionInfo {
-            version,
-            source_dir,
-            binary_path: dir.join("binary"),
-            manifest_path: dir.join("manifest.json"),
-            dir,
-        })
-    }
-
-    /// Find the most recent branch that exists in the bare repo, searching
-    /// backwards from `start` (e.g. `V{start}`, `V{start-1}`, …). Returns
-    /// `"main"` if none of the version branches exist.
-    fn find_valid_base_branch(&self, start: u32) -> String {
-        for n in (1..=start).rev() {
-            let branch = format!("V{}", n);
-            let check = Command::new("git")
-                .args(["rev-parse", "--verify", &format!("refs/heads/{}", branch)])
-                .env("GIT_DIR", &self.git_dir)
-                .output();
-            if let Ok(o) = check {
-                if o.status.success() {
-                    return branch;
-                }
-            }
-        }
-        "main".to_string()
-    }
-
-    pub fn switch_to(&mut self, version: &str) -> Result<String, String> {
-        let version_dir = self.base_dir.join(version);
-        if !version_dir.exists() {
-            return Err(format!("Version directory does not exist: {}", version));
-        }
-
-        let old_version = self.current_version();
-
         if let Some(ref old) = old_version {
-            fs::write(self.base_dir.join("rollback"), old.as_bytes())
-                .map_err(|e| format!("Failed to write rollback file: {}", e))?;
+            self.rollback_branch = Some(old.clone());
         }
-
-        fs::write(self.base_dir.join("current"), version.as_bytes())
-            .map_err(|e| format!("Failed to write current file: {}", e))?;
 
         self.consecutive_failures = 0;
 
@@ -390,13 +338,25 @@ impl VersionManager {
         Ok(old_version.unwrap_or_default())
     }
 
+    /// Rollback to the previous version.
     pub fn rollback(&mut self) -> Result<String, String> {
         let rollback_version = self
-            .rollback_version()
+            .rollback_branch
+            .clone()
             .ok_or("No rollback version available")?;
 
-        fs::write(self.base_dir.join("current"), rollback_version.as_bytes())
-            .map_err(|e| format!("Failed to write current file during rollback: {}", e))?;
+        let o = Command::new("git")
+            .args(["checkout", &rollback_version])
+            .current_dir(&self.source_dir)
+            .output()
+            .map_err(|e| format!("git checkout {} failed: {}", rollback_version, e))?;
+        if !o.status.success() {
+            return Err(format!(
+                "git checkout {} failed: {}",
+                rollback_version,
+                String::from_utf8_lossy(&o.stderr)
+            ));
+        }
 
         tracing::warn!(version = %rollback_version, "Rolled back to previous version");
 
@@ -431,52 +391,103 @@ impl VersionManager {
         was_locked
     }
 
+    /// List all version branches sorted numerically.
     pub fn list_versions(&self) -> Vec<String> {
+        if !self.source_dir.join(".git").exists() {
+            return Vec::new();
+        }
+
+        let output = Command::new("git")
+            .args(["branch", "--list", "V*", "--format=%(refname:short)"])
+            .current_dir(&self.source_dir)
+            .output();
+
         let mut versions = Vec::new();
-        if let Ok(entries) = fs::read_dir(&self.base_dir) {
-            for entry in entries.flatten() {
-                let name = entry.file_name().to_string_lossy().to_string();
-                if let Some(stripped) = name.strip_prefix('V') {
-                    if stripped.parse::<u32>().is_ok() && entry.path().is_dir() {
-                        versions.push(name);
+        if let Ok(o) = output {
+            if o.status.success() {
+                let stdout = String::from_utf8_lossy(&o.stdout);
+                for line in stdout.lines() {
+                    let name = line.trim().to_string();
+                    if let Some(stripped) = name.strip_prefix('V') {
+                        if stripped.parse::<u32>().is_ok() {
+                            versions.push(name);
+                        }
                     }
                 }
             }
         }
-        versions.sort_by_key(|v| v.strip_prefix('V').and_then(|n| n.parse::<u32>().ok()).unwrap_or(0));
+        versions.sort_by_key(|v| {
+            v.strip_prefix('V')
+                .and_then(|n| n.parse::<u32>().ok())
+                .unwrap_or(0)
+        });
         versions
     }
 
+    /// Return git log metadata for a version branch as a JSON value.
     pub fn version_detail(&self, version: &str) -> Result<serde_json::Value, String> {
-        let version_dir = self.base_dir.join(version);
-        if !version_dir.exists() {
-            return Err(format!("Version directory does not exist: {}", version));
+        let check = Command::new("git")
+            .args(["rev-parse", "--verify", &format!("refs/heads/{}", version)])
+            .current_dir(&self.source_dir)
+            .output()
+            .map_err(|e| format!("git rev-parse failed: {}", e))?;
+        if !check.status.success() {
+            return Err(format!("Version branch does not exist: {}", version));
         }
 
-        let manifest_path = version_dir.join("manifest.json");
-        let manifest = if manifest_path.exists() {
-            let content = fs::read_to_string(&manifest_path)
-                .map_err(|e| format!("Failed to read manifest: {}", e))?;
-            serde_json::from_str(&content)
-                .map_err(|e| format!("Failed to parse manifest: {}", e))?
-        } else {
-            serde_json::Value::Null
-        };
+        let log = Command::new("git")
+            .args([
+                "log",
+                "-1",
+                "--format=%H%n%ai%n%s",
+                &format!("refs/heads/{}", version),
+            ])
+            .current_dir(&self.source_dir)
+            .output()
+            .map_err(|e| format!("git log failed: {}", e))?;
+        if !log.status.success() {
+            return Err(format!(
+                "git log failed: {}",
+                String::from_utf8_lossy(&log.stderr)
+            ));
+        }
 
-        Ok(manifest)
+        let stdout = String::from_utf8_lossy(&log.stdout);
+        let lines: Vec<&str> = stdout.lines().collect();
+        let commit = lines.first().unwrap_or(&"").to_string();
+        let date = lines.get(1).unwrap_or(&"").to_string();
+        let subject = lines.get(2).unwrap_or(&"").to_string();
+
+        Ok(serde_json::json!({
+            "version": version,
+            "commit": commit,
+            "date": date,
+            "subject": subject,
+        }))
     }
 
-    pub fn has_binary(&self, version: &str) -> bool {
-        self.base_dir.join(version).join("binary").exists()
+    /// Check if the fixed binary exists.
+    pub fn has_binary(&self, _version: &str) -> bool {
+        self.binary_path.exists()
     }
 
+    /// Check if the version branch exists (i.e. it has source).
     pub fn has_source(&self, version: &str) -> bool {
-        self.base_dir.join(version).join("source").is_dir()
+        if !self.source_dir.join(".git").exists() {
+            return false;
+        }
+        let check = Command::new("git")
+            .args(["rev-parse", "--verify", &format!("refs/heads/{}", version)])
+            .current_dir(&self.source_dir)
+            .output();
+        matches!(check, Ok(o) if o.status.success())
     }
 
-    pub fn cleanup_old_versions(&self, keep: usize) -> Result<Vec<String>, String> {
+    /// Delete old version branches, keeping at most `keep` beyond
+    /// current and rollback.
+    pub fn cleanup_old_versions(&mut self, keep: usize) -> Result<Vec<String>, String> {
         let current = self.current_version();
-        let rollback = self.rollback_version();
+        let rollback = self.rollback_branch.clone();
         let mut all = self.list_versions();
 
         all.retain(|v| {
@@ -492,95 +503,49 @@ impl VersionManager {
         let mut removed = Vec::new();
 
         for v in &removable {
-            let source_dir = self.base_dir.join(v).join("source");
-
-            // Remove git worktree before deleting the directory.
-            let wt_out = Command::new("git")
-                .args(["worktree", "remove", "--force"])
-                .arg(&source_dir)
-                .env("GIT_DIR", &self.git_dir)
+            let o = Command::new("git")
+                .args(["branch", "-D", v])
+                .current_dir(&self.source_dir)
                 .output();
-            if let Ok(o) = &wt_out {
-                if !o.status.success() {
-                    tracing::warn!(
+            match o {
+                Ok(out) if out.status.success() => {
+                    removed.push(v.clone());
+                    tracing::info!(version = %v, "Old version branch deleted");
+                }
+                Ok(out) => {
+                    tracing::error!(
                         version = %v,
-                        "git worktree remove failed (may already be gone): {}",
-                        String::from_utf8_lossy(&o.stderr)
+                        "Failed to delete branch: {}",
+                        String::from_utf8_lossy(&out.stderr)
                     );
                 }
-            }
-
-            let dir = self.base_dir.join(v);
-            if dir.exists() {
-                if let Err(e) = fs::remove_dir_all(&dir) {
-                    tracing::error!(version = %v, "Failed to remove version directory: {}", e);
-                    continue;
+                Err(e) => {
+                    tracing::error!(version = %v, "git branch -D failed to run: {}", e);
                 }
-                removed.push(v.clone());
-                tracing::info!(version = %v, "Old version cleaned up");
             }
         }
 
         Ok(removed)
     }
-
-    pub fn copy_source(&self, from: &Path, to: &Path) -> Result<(), String> {
-        copy_dir_recursive(from, to).map_err(|e| {
-            format!(
-                "Failed to copy source from {} to {}: {}",
-                from.display(),
-                to.display(),
-                e
-            )
-        })
-    }
-
-    pub fn install_binary(
-        &self,
-        built_binary: &Path,
-        version_info: &VersionInfo,
-    ) -> Result<(), String> {
-        if !built_binary.exists() {
-            return Err(format!(
-                "Built binary not found: {}",
-                built_binary.display()
-            ));
-        }
-        fs::copy(built_binary, &version_info.binary_path)
-            .map_err(|e| format!("Failed to copy binary: {}", e))?;
-
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            fs::set_permissions(&version_info.binary_path, fs::Permissions::from_mode(0o755))
-                .map_err(|e| format!("Failed to set binary permissions: {}", e))?;
-        }
-
-        Ok(())
-    }
-
-    pub fn write_manifest(&self, version_info: &VersionInfo) -> Result<(), String> {
-        let manifest = serde_json::json!({
-            "version": version_info.version,
-            "created_at": chrono_now_iso(),
-            "source_dir": version_info.source_dir.to_string_lossy(),
-            "binary_path": version_info.binary_path.to_string_lossy(),
-        });
-
-        let content = serde_json::to_string_pretty(&manifest)
-            .map_err(|e| format!("Failed to serialize manifest: {}", e))?;
-        fs::write(&version_info.manifest_path, content)
-            .map_err(|e| format!("Failed to write manifest: {}", e))?;
-
-        Ok(())
-    }
 }
 
-fn chrono_now_iso() -> String {
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default();
-    format!("{}s", now.as_secs())
+fn copy_dir_recursive(src: &Path, dst: &Path) -> std::io::Result<()> {
+    fs::create_dir_all(dst)?;
+    for entry in fs::read_dir(src)? {
+        let entry = entry?;
+        let name = entry.file_name();
+        // Skip .git (preserves repo metadata) and target (build artifacts).
+        if name == ".git" || name == "target" {
+            continue;
+        }
+        let target = dst.join(&name);
+        if entry.file_type()?.is_dir() {
+            copy_dir_recursive(&entry.path(), &target)?;
+        } else {
+            fs::copy(entry.path(), &target)?;
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -588,7 +553,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn allocate_v1_creates_worktree_from_main() {
+    fn allocate_v1_creates_branch() {
         let tmp = tempfile::tempdir().unwrap();
         let mgr = VersionManager::new(tmp.path());
 
@@ -596,10 +561,10 @@ mod tests {
         assert_eq!(info.version, "V1");
         assert!(info.source_dir.exists(), "source dir must exist");
 
-        // `main` branch must be resolvable in the bare repo.
+        // `main` branch must be resolvable.
         let out = Command::new("git")
             .args(["rev-parse", "--verify", "refs/heads/main"])
-            .env("GIT_DIR", &mgr.git_dir)
+            .current_dir(&mgr.source_dir)
             .output()
             .unwrap();
         assert!(out.status.success(), "main branch must exist after init");
@@ -607,7 +572,7 @@ mod tests {
         // V1 branch must also exist.
         let out = Command::new("git")
             .args(["rev-parse", "--verify", "refs/heads/V1"])
-            .env("GIT_DIR", &mgr.git_dir)
+            .current_dir(&mgr.source_dir)
             .output()
             .unwrap();
         assert!(out.status.success(), "V1 branch must exist");
@@ -627,147 +592,146 @@ mod tests {
     }
 
     #[test]
-    fn stale_bare_repo_is_recovered() {
+    fn current_version_follows_branch() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut mgr = VersionManager::new(tmp.path());
+
+        assert_eq!(mgr.current_version(), None);
+
+        mgr.allocate_version().expect("V1");
+        assert_eq!(mgr.current_version(), Some("V1".to_string()));
+
+        mgr.allocate_version().expect("V2");
+        assert_eq!(mgr.current_version(), Some("V2".to_string()));
+    }
+
+    #[test]
+    fn switch_and_rollback() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut mgr = VersionManager::new(tmp.path());
+
+        mgr.allocate_version().expect("V1");
+        mgr.allocate_version().expect("V2");
+
+        // Switch to V1
+        let old = mgr.switch_to("V1").unwrap();
+        assert_eq!(old, "V2");
+        assert_eq!(mgr.current_version(), Some("V1".to_string()));
+        assert_eq!(mgr.rollback_version(), Some("V2".to_string()));
+
+        // Rollback to V2
+        let rolled = mgr.rollback().unwrap();
+        assert_eq!(rolled, "V2");
+        assert_eq!(mgr.current_version(), Some("V2".to_string()));
+    }
+
+    #[test]
+    fn list_versions_returns_sorted_branches() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mgr = VersionManager::new(tmp.path());
+
+        mgr.allocate_version().expect("V1");
+        mgr.allocate_version().expect("V2");
+        mgr.allocate_version().expect("V3");
+
+        let versions = mgr.list_versions();
+        assert_eq!(versions, vec!["V1", "V2", "V3"]);
+    }
+
+    #[test]
+    fn cleanup_old_versions_deletes_branches() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut mgr = VersionManager::new(tmp.path());
+
+        mgr.allocate_version().expect("V1");
+        mgr.allocate_version().expect("V2");
+        mgr.allocate_version().expect("V3");
+        // Currently on V3. Switch to V3 so rollback=V2 is preserved.
+        // (allocate_version already checks out V3.)
+
+        // Manually set rollback so V2 is protected.
+        mgr.rollback_branch = Some("V2".to_string());
+
+        // Keep 0 beyond current (V3) and rollback (V2) → V1 should be removed.
+        let removed = mgr.cleanup_old_versions(0).unwrap();
+        assert_eq!(removed, vec!["V1"]);
+
+        let remaining = mgr.list_versions();
+        assert!(remaining.contains(&"V2".to_string()));
+        assert!(remaining.contains(&"V3".to_string()));
+        assert!(!remaining.contains(&"V1".to_string()));
+    }
+
+    #[test]
+    fn stale_repo_is_recovered() {
         let tmp = tempfile::tempdir().unwrap();
         let mgr = VersionManager::new(tmp.path());
         mgr.ensure_dirs().unwrap();
 
-        // Create a bare repo but do NOT commit, simulating a stale init.
-        fs::create_dir_all(&mgr.git_dir).unwrap();
-        let out = Command::new("git")
-            .args(["init", "--bare"])
-            .arg(&mgr.git_dir)
+        // Create a repo but corrupt it by removing refs so main is absent.
+        fs::create_dir_all(&mgr.source_dir).unwrap();
+        let o = Command::new("git")
+            .args(["init", "-b", "main"])
+            .arg(&mgr.source_dir)
             .output()
             .unwrap();
-        assert!(out.status.success());
-        assert!(mgr.git_dir.join("HEAD").exists(), "HEAD should exist");
+        assert!(o.status.success());
+        // Don't commit so `main` ref doesn't exist.
 
-        // init_git_repo_if_needed should detect missing `main` and re-init.
-        mgr.init_git_repo_if_needed()
-            .expect("should recover from stale bare repo");
+        // init_repo_if_needed should detect missing `main` and re-init.
+        mgr.init_repo_if_needed()
+            .expect("should recover from stale repo");
 
-        // Now `main` must be valid.
         let out = Command::new("git")
             .args(["rev-parse", "--verify", "refs/heads/main"])
-            .env("GIT_DIR", &mgr.git_dir)
+            .current_dir(&mgr.source_dir)
             .output()
             .unwrap();
         assert!(out.status.success(), "main must exist after recovery");
     }
 
     #[test]
-    fn orphan_v1_dir_without_branch_still_allows_v2() {
-        // Simulate the scenario that causes the reported bug:
-        // A previous V1 allocation created the V1 directory but the git
-        // worktree add failed (or the process was killed), leaving a V1
-        // directory without a corresponding V1 branch in the bare repo.
-        let tmp = tempfile::tempdir().unwrap();
-        let mgr = VersionManager::new(tmp.path());
-        mgr.ensure_dirs().unwrap();
-        mgr.init_git_repo_if_needed().unwrap();
-
-        // Create the V1 directory without a V1 branch (orphan directory).
-        let orphan_dir = mgr.base_dir.join("V1");
-        fs::create_dir_all(&orphan_dir).unwrap();
-
-        // Allocating the next version should succeed despite V1 branch being
-        // absent. It should fall back to `main` as the base branch.
-        let info = mgr.allocate_version().expect(
-            "V2 allocation should succeed even when V1 dir exists without V1 branch",
-        );
-        assert_eq!(info.version, "V2");
-        assert!(info.source_dir.exists(), "V2 source dir must exist");
-
-        // V2 branch must exist in the bare repo.
-        let out = Command::new("git")
-            .args(["rev-parse", "--verify", "refs/heads/V2"])
-            .env("GIT_DIR", &mgr.git_dir)
-            .output()
-            .unwrap();
-        assert!(out.status.success(), "V2 branch must exist");
-    }
-
-    #[test]
-    fn failed_worktree_add_cleans_up_directory() {
-        // If git worktree add fails, the version directory must be removed so
-        // that next_version_number() does not see a phantom version.
-        let tmp = tempfile::tempdir().unwrap();
-        let mgr = VersionManager::new(tmp.path());
-        mgr.ensure_dirs().unwrap();
-        mgr.init_git_repo_if_needed().unwrap();
-
-        // Pre-create V1/source as a non-empty directory so that when
-        // allocate_version() tries to create the V1 worktree there, git
-        // will refuse because the path is already occupied.
-        let v1_dir = mgr.base_dir.join("V1");
-        let v1_source = v1_dir.join("source");
-        fs::create_dir_all(&v1_source).unwrap();
-        fs::write(v1_source.join("blocker"), "block").unwrap();
-
-        // next_version_number sees V1 dir → returns 2.
-        // But V1 has no branch, so find_valid_base_branch falls back to main.
-        // git worktree add -b V2 V2/source main should succeed.
-        // So this won't test V1 cleanup directly. Instead, simulate by
-        // removing the bare repo main branch to force a failure on V2 as well.
-        //
-        // A cleaner approach: directly verify the cleanup path by ensuring
-        // that after a failed allocation the directory does not remain.
-        // We make V2/source exist as a regular file to block worktree creation.
-        let v2_dir = mgr.base_dir.join("V2");
-        fs::create_dir_all(&v2_dir).unwrap();
-        fs::write(v2_dir.join("source"), "file-blocker").unwrap();
-
-        // next_version_number sees V1, V2 → returns 3.
-        // V3 dir/source is clean, so V3 allocation should succeed.
-        // V1 and V2 remain (we aren't testing those). This validates that
-        // the system can skip over orphan directories.
-        let v3 = mgr.allocate_version().expect("V3 should succeed despite orphan V1/V2 dirs");
-        assert_eq!(v3.version, "V3");
-        assert!(v3.source_dir.exists());
-    }
-
-    #[test]
-    fn copy_source_preserves_git_worktree() {
+    fn copy_source_preserves_git() {
         let tmp = tempfile::tempdir().unwrap();
         let mgr = VersionManager::new(tmp.path());
 
         let info = mgr.allocate_version().expect("V1 allocation");
 
-        // The worktree's .git link file must exist after allocation.
-        let git_link = info.source_dir.join(".git");
-        assert!(git_link.exists(), ".git link must exist in worktree");
-        let link_before = fs::read_to_string(&git_link).unwrap();
-
-        // Build a fake staging directory that contains a .git directory
-        // (simulating a source that happens to include .git metadata).
+        // Build a fake staging directory.
         let staging = tmp.path().join("staging");
         fs::create_dir_all(staging.join(".git").join("objects")).unwrap();
-        fs::write(staging.join(".git").join("HEAD"), "ref: refs/heads/fake\n").unwrap();
+        fs::write(
+            staging.join(".git").join("HEAD"),
+            "ref: refs/heads/fake\n",
+        )
+        .unwrap();
         fs::create_dir_all(staging.join("target").join("debug")).unwrap();
-        fs::write(staging.join("target").join("debug").join("artifact"), b"binary").unwrap();
+        fs::write(
+            staging.join("target").join("debug").join("artifact"),
+            b"binary",
+        )
+        .unwrap();
         fs::write(staging.join("Cargo.toml"), b"[package]\nname=\"test\"\n").unwrap();
         fs::create_dir_all(staging.join("src")).unwrap();
         fs::write(staging.join("src").join("main.rs"), b"fn main() {}").unwrap();
 
-        // copy_source must skip .git and target.
         mgr.copy_source(&staging, &info.source_dir).unwrap();
 
-        // .git link file must be unchanged (not overwritten by staging's .git).
-        assert!(git_link.exists(), ".git link must still exist");
-        let link_after = fs::read_to_string(&git_link).unwrap();
-        assert_eq!(link_before, link_after, ".git worktree link must be preserved");
-
-        // target directory must NOT have been copied.
+        // .git must not have been overwritten.
+        assert!(
+            info.source_dir.join(".git").exists(),
+            ".git must still exist"
+        );
+        // target must not have been copied.
         assert!(
             !info.source_dir.join("target").exists(),
             "target directory must not be copied"
         );
-
         // Regular files must have been copied.
         assert!(info.source_dir.join("Cargo.toml").exists());
         assert!(info.source_dir.join("src").join("main.rs").exists());
 
-        // Git operations must still work in the worktree.
+        // Git operations must still work.
         let out = Command::new("git")
             .args(["status", "--porcelain"])
             .current_dir(&info.source_dir)
@@ -775,27 +739,32 @@ mod tests {
             .unwrap();
         assert!(
             out.status.success(),
-            "git status must succeed in preserved worktree: {}",
+            "git status must succeed: {}",
             String::from_utf8_lossy(&out.stderr)
         );
     }
-}
 
-fn copy_dir_recursive(src: &Path, dst: &Path) -> std::io::Result<()> {
-    fs::create_dir_all(dst)?;
-    for entry in fs::read_dir(src)? {
-        let entry = entry?;
-        let name = entry.file_name();
-        // Skip .git (preserves worktree link file) and target (build artifacts).
-        if name == ".git" || name == "target" {
-            continue;
-        }
-        let target = dst.join(&name);
-        if entry.file_type()?.is_dir() {
-            copy_dir_recursive(&entry.path(), &target)?;
-        } else {
-            fs::copy(entry.path(), &target)?;
-        }
+    #[test]
+    fn has_source_checks_branch_existence() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mgr = VersionManager::new(tmp.path());
+
+        mgr.allocate_version().expect("V1");
+
+        assert!(mgr.has_source("V1"));
+        assert!(!mgr.has_source("V99"));
     }
-    Ok(())
+
+    #[test]
+    fn version_detail_returns_commit_info() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mgr = VersionManager::new(tmp.path());
+
+        let info = mgr.allocate_version().expect("V1");
+        mgr.commit_version_source(&info).unwrap();
+
+        let detail = mgr.version_detail("V1").unwrap();
+        assert_eq!(detail["version"], "V1");
+        assert!(!detail["commit"].as_str().unwrap().is_empty());
+    }
 }
