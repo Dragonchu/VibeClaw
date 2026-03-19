@@ -1,4 +1,5 @@
 use crate::deepseek::{FunctionDefinition, ToolDefinition};
+use crate::memory::MemoryManager;
 use crate::source::SourceManager;
 
 pub fn tool_definitions() -> Vec<ToolDefinition> {
@@ -70,6 +71,74 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
                 }),
             },
         },
+        ToolDefinition {
+            type_: "function".to_string(),
+            function: FunctionDefinition {
+                name: "memory_search".to_string(),
+                description: "Search across all memory files (MEMORY.md and daily logs) for relevant content. Returns the top matching snippets ranked by relevance.".to_string(),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "query": {
+                            "type": "string",
+                            "description": "Keywords or phrase to search for in memory"
+                        }
+                    },
+                    "required": ["query"]
+                }),
+            },
+        },
+        ToolDefinition {
+            type_: "function".to_string(),
+            function: FunctionDefinition {
+                name: "memory_get".to_string(),
+                description: "Get a memory file by date. Use \"today\", \"yesterday\", or a date in YYYY-MM-DD format. Omit or pass \"today\" for today's daily log.".to_string(),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "date": {
+                            "type": "string",
+                            "description": "\"today\", \"yesterday\", or \"YYYY-MM-DD\". Defaults to \"today\"."
+                        }
+                    },
+                    "required": []
+                }),
+            },
+        },
+        ToolDefinition {
+            type_: "function".to_string(),
+            function: FunctionDefinition {
+                name: "memory_write".to_string(),
+                description: "Overwrite MEMORY.md with new long-term facts. Use this to update curated, persistent knowledge that should survive across sessions.".to_string(),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "content": {
+                            "type": "string",
+                            "description": "Full Markdown content to write to MEMORY.md"
+                        }
+                    },
+                    "required": ["content"]
+                }),
+            },
+        },
+        ToolDefinition {
+            type_: "function".to_string(),
+            function: FunctionDefinition {
+                name: "memory_append".to_string(),
+                description: "Append a timestamped entry to today's daily log. Use this for short-term notes, task progress, and session context.".to_string(),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "content": {
+                            "type": "string",
+                            "description": "Markdown content to append to today's daily log"
+                        }
+                    },
+                    "required": ["content"]
+                }),
+            },
+        },
     ]
 }
 
@@ -79,7 +148,7 @@ pub enum ToolResult {
     SubmitUpdate(String),
 }
 
-pub fn execute_tool(name: &str, arguments: &str, source: &mut SourceManager) -> ToolResult {
+pub fn execute_tool(name: &str, arguments: &str, source: &mut SourceManager, memory: &mut MemoryManager) -> ToolResult {
     let args: serde_json::Value = serde_json::from_str(arguments).unwrap_or_default();
 
     match name {
@@ -111,6 +180,37 @@ pub fn execute_tool(name: &str, arguments: &str, source: &mut SourceManager) -> 
             }
             Err(e) => ToolResult::Output(format!("Error packing workspace: {}", e)),
         },
+        "memory_search" => {
+            let query = args["query"].as_str().unwrap_or("");
+            match memory.search(query) {
+                Ok(result) => ToolResult::Output(result),
+                Err(e) => ToolResult::Output(format!("Error: {}", e)),
+            }
+        }
+        "memory_get" => {
+            let date = args["date"].as_str().unwrap_or("today");
+            match memory.get_daily(date) {
+                Ok(result) => ToolResult::Output(result),
+                Err(e) => ToolResult::Output(format!("Error: {}", e)),
+            }
+        }
+        "memory_write" => {
+            let content = args["content"].as_str().unwrap_or("");
+            match memory.write_long_term(content) {
+                Ok(()) => ToolResult::Output("MEMORY.md updated.".to_string()),
+                Err(e) => ToolResult::Output(format!("Error: {}", e)),
+            }
+        }
+        "memory_append" => {
+            let content = args["content"].as_str().unwrap_or("");
+            match memory.append_daily(content) {
+                Ok(()) => ToolResult::Output(format!(
+                    "Appended to today's log ({}).",
+                    MemoryManager::today()
+                )),
+                Err(e) => ToolResult::Output(format!("Error: {}", e)),
+            }
+        }
         _ => ToolResult::Output(format!("Unknown tool: {}", name)),
     }
 }

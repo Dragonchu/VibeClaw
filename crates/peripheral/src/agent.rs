@@ -1,16 +1,23 @@
 use tokio::sync::mpsc;
 
 use crate::deepseek::{ChatMessage, DeepSeekClient, StreamEvent};
+use crate::memory::MemoryManager;
 use crate::source::SourceManager;
 use crate::tools::{self, ToolResult};
 
-const SYSTEM_PROMPT: &str = r#"You are Reloopy, a self-evolving AI agent written in Rust. You can read and modify your own source code to improve yourself.
+const BASE_SYSTEM_PROMPT: &str = r#"You are Reloopy, a self-evolving AI agent written in Rust. You can read and modify your own source code to improve yourself.
 
-## Available Tools
+## Source Code Tools
 - read_source_file(path): Read a file from your source code. Path is relative to the peripheral crate root (e.g. "src/main.rs", "Cargo.toml")
 - list_source_files(path): List files in your source directory. Path is relative to the peripheral crate root (e.g. "src/", ".")
 - write_source_file(path, content): Stage changes to a file. Path is relative to crates/peripheral/ (e.g. "src/main.rs"). Provide the FULL file content.
 - submit_update(): Submit all staged changes for compilation and deployment.
+
+## Memory Tools
+- memory_search(query): Search across all memory files for relevant content.
+- memory_get(date): Get a daily log. date = "today" | "yesterday" | "YYYY-MM-DD".
+- memory_write(content): Overwrite MEMORY.md with updated long-term facts. Always call memory_get or memory_search first to read existing content, then merge and rewrite the full document.
+- memory_append(content): Append a note to today's daily log.
 
 ## Guidelines
 - Always read the relevant source files before making changes
@@ -18,7 +25,18 @@ const SYSTEM_PROMPT: &str = r#"You are Reloopy, a self-evolving AI agent written
 - Maintain IPC protocol compatibility (handshake, heartbeat, message handling)
 - Make focused, incremental changes
 - After writing all modified files, call submit_update() to deploy
+- Use memory_append() to record important decisions or context during a session
+- Use memory_write() to persist key facts that should survive across sessions
 "#;
+
+fn build_system_prompt(memory: &MemoryManager) -> String {
+    let ctx = memory.load_context();
+    if ctx.is_empty() {
+        BASE_SYSTEM_PROMPT.to_string()
+    } else {
+        format!("{}\n## Current Memory\n\n{}", BASE_SYSTEM_PROMPT, ctx)
+    }
+}
 
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(tag = "type", content = "data")]
@@ -41,15 +59,18 @@ pub enum AgentOutcome {
 pub struct Agent {
     deepseek: DeepSeekClient,
     source: SourceManager,
+    memory: MemoryManager,
     conversation: Vec<ChatMessage>,
 }
 
 impl Agent {
-    pub fn new(deepseek: DeepSeekClient, source: SourceManager) -> Self {
+    pub fn new(deepseek: DeepSeekClient, source: SourceManager, memory: MemoryManager) -> Self {
+        let system_prompt = build_system_prompt(&memory);
         Self {
             deepseek,
             source,
-            conversation: vec![ChatMessage::system(SYSTEM_PROMPT)],
+            memory,
+            conversation: vec![ChatMessage::system(&system_prompt)],
         }
     }
 
@@ -108,6 +129,7 @@ impl Agent {
                         &tc.function.name,
                         &tc.function.arguments,
                         &mut self.source,
+                        &mut self.memory,
                     );
 
                     match result {
@@ -154,7 +176,8 @@ impl Agent {
     }
 
     pub fn reset_conversation(&mut self) {
-        self.conversation = vec![ChatMessage::system(SYSTEM_PROMPT)];
+        let system_prompt = build_system_prompt(&self.memory);
+        self.conversation = vec![ChatMessage::system(&system_prompt)];
     }
 }
 
