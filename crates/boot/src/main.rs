@@ -23,9 +23,8 @@ async fn main() {
     info!("reloopy-boot microkernel starting");
 
     let config = microkernel::BootConfig::default();
-    let mut kernel = microkernel::Microkernel::new(config);
 
-    if let Err(e) = kernel.run().await {
+    if let Err(e) = microkernel::RuntimeSupervisor::run(config).await {
         tracing::error!("Boot microkernel fatal error: {}", e);
         std::process::exit(1);
     }
