@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 
 use crate::capability::CapabilityManager;
 use crate::constitution::ConstitutionManager;
-use crate::ipc::IpcRouter;
+use crate::ipc::{RouterActor, RouterHandle};
 use crate::lease::{LeaseConfig, LeaseManager, LeaseStatus};
 use crate::protocol::ProtocolManager;
 use crate::resource::{ResourceLimits, ResourceMonitor, ViolationSeverity};
@@ -93,6 +93,9 @@ const PROBATION_DURATION_SECS: u64 = 3600;
 const PROBATION_CHECK_INTERVAL_SECS: u64 = 30;
 const RESOURCE_CHECK_INTERVAL_SECS: u64 = 10;
 
+/// Capacity of the boot message channel (kernel ← connection handlers).
+const BOOT_MESSAGE_CHANNEL_SIZE: usize = 256;
+
 struct ProbationState {
     version: String,
     binary_path: String,
@@ -169,22 +172,15 @@ impl Microkernel {
         }
     }
 
-    pub async fn run(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+    pub async fn run(
+        &mut self,
+        mut boot_rx: tokio::sync::mpsc::Receiver<Envelope>,
+        router: RouterHandle,
+    ) -> Result<(), Box<dyn std::error::Error>> {
         std::fs::create_dir_all(&self.config.base_dir)?;
         self.state_store
             .init()
             .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
-
-        let mut router = IpcRouter::new(self.config.sock_path.clone());
-        let mut boot_rx = router.take_boot_rx();
-
-        let router_ref = std::sync::Arc::new(router);
-        let router_for_listener = std::sync::Arc::clone(&router_ref);
-        tokio::spawn(async move {
-            if let Err(e) = router_for_listener.listen().await {
-                tracing::error!("IPC listener error: {}", e);
-            }
-        });
 
         tracing::info!(
             base_dir = %self.config.base_dir.display(),
@@ -208,23 +204,23 @@ impl Microkernel {
         loop {
             tokio::select! {
                 Some(envelope) = boot_rx.recv() => {
-                    self.handle_message(envelope, &router_ref).await;
+                    self.handle_message(envelope, &router).await;
                 }
                 _ = lease_tick.tick() => {
-                    self.check_leases(&router_ref).await;
+                    self.check_leases(&router).await;
                 }
                 _ = probation_tick.tick() => {
-                    self.check_probation(&router_ref).await;
+                    self.check_probation(&router).await;
                 }
                 _ = resource_tick.tick() => {
-                    self.check_resource_based_transitions(&router_ref).await;
+                    self.check_resource_based_transitions(&router).await;
                 }
                 _ = hot_swap_tick.tick() => {
-                    self.check_hot_swap(&router_ref).await;
+                    self.check_hot_swap(&router).await;
                 }
                 _ = sigterm.recv() => {
                     tracing::warn!("Received SIGTERM — initiating graceful shutdown");
-                    self.initiate_shutdown(&router_ref).await;
+                    self.initiate_shutdown(&router).await;
                 }
             }
 
@@ -237,7 +233,7 @@ impl Microkernel {
         tracing::info!("Waiting for peers to disconnect (up to 5s)…");
         let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
         loop {
-            let peers = router_ref.connected_peers().await;
+            let peers = router.connected_peers().await;
             if peers.is_empty() {
                 tracing::info!("All peers disconnected");
                 break;
@@ -262,7 +258,7 @@ impl Microkernel {
         Ok(())
     }
 
-    async fn handle_message(&mut self, envelope: Envelope, router: &std::sync::Arc<IpcRouter>) {
+    async fn handle_message(&mut self, envelope: Envelope, router: &RouterHandle) {
         tracing::debug!(
             from = %envelope.from,
             msg_type = %envelope.msg_type,
@@ -345,7 +341,7 @@ impl Microkernel {
         }
     }
 
-    async fn handle_hello(&mut self, envelope: Envelope, router: &std::sync::Arc<IpcRouter>) {
+    async fn handle_hello(&mut self, envelope: Envelope, router: &RouterHandle) {
         let from = &envelope.from;
 
         let hello: messages::Hello = match serde_json::from_value(envelope.payload.clone()) {
@@ -410,7 +406,7 @@ impl Microkernel {
         }
     }
 
-    async fn handle_lease_renew(&mut self, envelope: Envelope, router: &std::sync::Arc<IpcRouter>) {
+    async fn handle_lease_renew(&mut self, envelope: Envelope, router: &RouterHandle) {
         let from = &envelope.from;
 
         let health = serde_json::from_value::<messages::LeaseRenew>(envelope.payload.clone())
@@ -488,7 +484,7 @@ impl Microkernel {
     async fn handle_submit_update(
         &mut self,
         envelope: Envelope,
-        router: &std::sync::Arc<IpcRouter>,
+        router: &RouterHandle,
     ) {
         let from = envelope.from.clone();
 
@@ -636,7 +632,7 @@ impl Microkernel {
     async fn handle_compile_result(
         &mut self,
         envelope: Envelope,
-        router: &std::sync::Arc<IpcRouter>,
+        router: &RouterHandle,
     ) {
         let result: messages::CompileResult = match serde_json::from_value(envelope.payload.clone())
         {
@@ -725,7 +721,7 @@ impl Microkernel {
         .await;
     }
 
-    async fn handle_test_result(&mut self, envelope: Envelope, router: &std::sync::Arc<IpcRouter>) {
+    async fn handle_test_result(&mut self, envelope: Envelope, router: &RouterHandle) {
         let result: messages::TestResult = match serde_json::from_value(envelope.payload.clone()) {
             Ok(r) => r,
             Err(e) => {
@@ -856,7 +852,7 @@ impl Microkernel {
         &mut self,
         new_version: &str,
         envelope_id: &str,
-        router: &std::sync::Arc<IpcRouter>,
+        router: &RouterHandle,
     ) {
         let old_version = self.version_manager.current_version().unwrap_or_default();
 
@@ -1029,7 +1025,7 @@ impl Microkernel {
         }
     }
 
-    async fn check_probation(&mut self, router: &std::sync::Arc<IpcRouter>) {
+    async fn check_probation(&mut self, router: &RouterHandle) {
         let probation = match &self.probation {
             Some(p) => p,
             None => return,
@@ -1092,7 +1088,7 @@ impl Microkernel {
 
     async fn send_audit(
         &self,
-        router: &std::sync::Arc<IpcRouter>,
+        router: &RouterHandle,
         event: &str,
         version: Option<&str>,
         details: serde_json::Value,
@@ -1123,7 +1119,7 @@ impl Microkernel {
         }
     }
 
-    async fn handle_get_state(&self, envelope: Envelope, router: &std::sync::Arc<IpcRouter>) {
+    async fn handle_get_state(&self, envelope: Envelope, router: &RouterHandle) {
         let from = envelope.from.clone();
 
         let request: messages::GetState = match serde_json::from_value(envelope.payload.clone()) {
@@ -1158,7 +1154,7 @@ impl Microkernel {
         }
     }
 
-    async fn handle_set_state(&mut self, envelope: Envelope, router: &std::sync::Arc<IpcRouter>) {
+    async fn handle_set_state(&mut self, envelope: Envelope, router: &RouterHandle) {
         let from = envelope.from.clone();
 
         let request: messages::SetState = match serde_json::from_value(envelope.payload.clone()) {
@@ -1192,7 +1188,7 @@ impl Microkernel {
         }
     }
 
-    async fn check_leases(&mut self, router: &std::sync::Arc<IpcRouter>) {
+    async fn check_leases(&mut self, router: &RouterHandle) {
         let statuses = self.lease_manager.check_all();
 
         for (identity, status) in statuses {
@@ -1236,7 +1232,7 @@ impl Microkernel {
         }
     }
 
-    async fn advance_hot_swap_after_disconnect(&mut self, router: &std::sync::Arc<IpcRouter>) {
+    async fn advance_hot_swap_after_disconnect(&mut self, router: &RouterHandle) {
         let (new_version, new_binary, old_version) = match std::mem::replace(&mut self.hot_swap, HotSwapState::Idle) {
             HotSwapState::WaitingForOldDisconnect {
                 new_version,
@@ -1324,7 +1320,7 @@ impl Microkernel {
         self.peripheral_child = None;
     }
 
-    async fn check_hot_swap(&mut self, router: &std::sync::Arc<IpcRouter>) {
+    async fn check_hot_swap(&mut self, router: &RouterHandle) {
         match &self.hot_swap {
             HotSwapState::Idle => {}
             HotSwapState::WaitingForOldDisconnect { initiated_at, .. } => {
@@ -1393,7 +1389,7 @@ impl Microkernel {
     async fn handle_runlevel_request(
         &mut self,
         envelope: Envelope,
-        router: &std::sync::Arc<IpcRouter>,
+        router: &RouterHandle,
     ) {
         let from = envelope.from.clone();
 
@@ -1484,7 +1480,7 @@ impl Microkernel {
         to: Runlevel,
         reason: &str,
         automatic: bool,
-        router: &std::sync::Arc<IpcRouter>,
+        router: &RouterHandle,
     ) {
         let transition = self.runlevel_manager.transition(
             to,
@@ -1523,7 +1519,7 @@ impl Microkernel {
         from: Runlevel,
         to: Runlevel,
         reason: &str,
-        router: &std::sync::Arc<IpcRouter>,
+        router: &RouterHandle,
     ) {
         let change = messages::RunlevelChange {
             from: from.as_u8(),
@@ -1542,7 +1538,7 @@ impl Microkernel {
         router.broadcast(envelope).await;
     }
 
-    async fn initiate_shutdown(&mut self, router: &std::sync::Arc<IpcRouter>) {
+    async fn initiate_shutdown(&mut self, router: &RouterHandle) {
         tracing::warn!("Initiating system shutdown — sending Shutdown to all peers");
 
         let shutdown = messages::Shutdown {
@@ -1566,7 +1562,7 @@ impl Microkernel {
     async fn handle_admin_shutdown(
         &mut self,
         envelope: Envelope,
-        router: &std::sync::Arc<IpcRouter>,
+        router: &RouterHandle,
     ) {
         let from = envelope.from.clone();
         tracing::warn!(requested_by = %from, "Admin shutdown requested");
@@ -1588,7 +1584,7 @@ impl Microkernel {
         self.initiate_shutdown(router).await;
     }
 
-    async fn check_resource_based_transitions(&mut self, router: &std::sync::Arc<IpcRouter>) {
+    async fn check_resource_based_transitions(&mut self, router: &RouterHandle) {
         let avg_cpu = self.lease_manager.avg_cpu_percent();
 
         if self.runlevel_manager.should_exit_evolve(avg_cpu) {
@@ -1608,7 +1604,7 @@ impl Microkernel {
     async fn handle_constitution_amendment(
         &mut self,
         envelope: Envelope,
-        router: &std::sync::Arc<IpcRouter>,
+        router: &RouterHandle,
     ) {
         let from = envelope.from.clone();
 
@@ -1685,7 +1681,7 @@ impl Microkernel {
     async fn handle_protocol_extension(
         &mut self,
         envelope: Envelope,
-        router: &std::sync::Arc<IpcRouter>,
+        router: &RouterHandle,
     ) {
         let from = envelope.from.clone();
 
@@ -1765,7 +1761,7 @@ impl Microkernel {
         .await;
     }
 
-    async fn handle_admin_status(&self, envelope: Envelope, router: &std::sync::Arc<IpcRouter>) {
+    async fn handle_admin_status(&self, envelope: Envelope, router: &RouterHandle) {
         let from = envelope.from.clone();
         let connected = router.connected_peers().await;
 
@@ -1793,7 +1789,7 @@ impl Microkernel {
     async fn handle_admin_list_versions(
         &self,
         envelope: Envelope,
-        router: &std::sync::Arc<IpcRouter>,
+        router: &RouterHandle,
     ) {
         let from = envelope.from.clone();
         let current = self.version_manager.current_version();
@@ -1826,7 +1822,7 @@ impl Microkernel {
     async fn handle_admin_version_detail(
         &self,
         envelope: Envelope,
-        router: &std::sync::Arc<IpcRouter>,
+        router: &RouterHandle,
     ) {
         let from = envelope.from.clone();
         let req: messages::AdminVersionDetailRequest =
@@ -1867,7 +1863,7 @@ impl Microkernel {
     async fn handle_admin_cleanup_versions(
         &mut self,
         envelope: Envelope,
-        router: &std::sync::Arc<IpcRouter>,
+        router: &RouterHandle,
     ) {
         let from = envelope.from.clone();
         let req: messages::AdminCleanupVersionsRequest =
@@ -1900,7 +1896,7 @@ impl Microkernel {
     async fn handle_admin_force_rollback(
         &mut self,
         envelope: Envelope,
-        router: &std::sync::Arc<IpcRouter>,
+        router: &RouterHandle,
     ) {
         let from = envelope.from.clone();
         let req: messages::AdminForceRollbackRequest =
@@ -1957,7 +1953,7 @@ impl Microkernel {
     async fn handle_admin_lease_status(
         &self,
         envelope: Envelope,
-        router: &std::sync::Arc<IpcRouter>,
+        router: &RouterHandle,
     ) {
         let from = envelope.from.clone();
 
@@ -1989,7 +1985,7 @@ impl Microkernel {
     async fn handle_admin_unlock_version(
         &mut self,
         envelope: Envelope,
-        router: &std::sync::Arc<IpcRouter>,
+        router: &RouterHandle,
     ) {
         let from = envelope.from.clone();
         let was_locked = self.version_manager.unlock();
@@ -2021,7 +2017,7 @@ impl Microkernel {
     async fn handle_admin_audit_query(
         &self,
         envelope: Envelope,
-        router: &std::sync::Arc<IpcRouter>,
+        router: &RouterHandle,
     ) {
         let from = envelope.from.clone();
 
@@ -2040,5 +2036,45 @@ impl Microkernel {
         if let Err(e) = router.send_to(&from, response).await {
             tracing::warn!(peer = %from, "Failed to send AdminAuditQueryResponse: {}", e);
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Runtime Supervisor — unified startup / shutdown / reclaim
+// ---------------------------------------------------------------------------
+
+/// Supervisor that wires together the router actor and the kernel event loop.
+///
+/// Responsibilities:
+/// 1. Creates the boot message channel (`boot_tx` / `boot_rx`) so the kernel
+///    owns the receiver from birth.
+/// 2. Constructs and spawns the [`RouterActor`] (single owner of peer state).
+/// 3. Runs the [`Microkernel`] event loop.
+/// 4. On shutdown, reclaims the router actor task.
+pub struct RuntimeSupervisor;
+
+impl RuntimeSupervisor {
+    pub async fn run(config: BootConfig) -> Result<(), Box<dyn std::error::Error>> {
+        // boot_rx belongs to the kernel from birth — not created inside the router
+        let (boot_tx, boot_rx) = tokio::sync::mpsc::channel(BOOT_MESSAGE_CHANNEL_SIZE);
+
+        // Router actor: single owner of the peer routing table (no Arc<RwLock>)
+        let (router_actor, router_handle) = RouterActor::new(config.sock_path.clone(), boot_tx);
+
+        // Spawn the router actor
+        let router_task = tokio::spawn(async move {
+            if let Err(e) = router_actor.run().await {
+                tracing::error!("Router actor error: {}", e);
+            }
+        });
+
+        // Kernel event loop: only handles boot business
+        let mut kernel = Microkernel::new(config);
+        let result = kernel.run(boot_rx, router_handle).await;
+
+        // Reclaim the router actor on shutdown
+        router_task.abort();
+
+        result
     }
 }
