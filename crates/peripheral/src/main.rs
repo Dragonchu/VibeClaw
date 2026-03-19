@@ -223,12 +223,20 @@ async fn run(agent: Agent, ipc: IpcHandle, heartbeat_interval: Duration, http_po
     let listener = match tokio::net::TcpListener::bind(addr).await {
         Ok(l) => l,
         Err(e) => {
-            tracing::error!("Failed to bind HTTP on {}: {}", addr, e);
-            std::process::exit(1);
+            tracing::warn!("Failed to bind HTTP on {}: {}; falling back to OS-assigned port", addr, e);
+            let fallback = std::net::SocketAddr::from(([0, 0, 0, 0], 0u16));
+            match tokio::net::TcpListener::bind(fallback).await {
+                Ok(l) => l,
+                Err(e2) => {
+                    tracing::error!("Failed to bind HTTP on fallback port: {}", e2);
+                    std::process::exit(1);
+                }
+            }
         }
     };
 
-    tracing::info!("HTTP server listening on http://{}", addr);
+    let actual_addr = listener.local_addr().unwrap_or(addr);
+    tracing::info!("HTTP server listening on http://{}", actual_addr);
 
     let shutdown = shutdown_notify.clone();
     axum::serve(listener, router)
