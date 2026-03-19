@@ -16,6 +16,11 @@ const MAX_CONSECUTIVE_FAILURES: u32 = 3;
 /// Git ref used to persist the rollback target across restarts.
 const ROLLBACK_REF: &str = "refs/reloopy/rollback";
 
+/// Compile-time path to the peripheral crate source tree.  Used as seed
+/// source when initialising the `peripheral/source/` git repo for the
+/// first time.  Set by `crates/boot/build.rs`.
+const SEED_SOURCE: &str = env!("RELOOPY_SEED_SOURCE");
+
 #[derive(Debug)]
 pub struct VersionManager {
     /// `~/.reloopy/peripheral`
@@ -181,8 +186,39 @@ impl VersionManager {
             }
         }
 
+        // Copy the seed peripheral source into the fresh repo so it is
+        // compilable from the very first version branch.
+        let seed = Path::new(SEED_SOURCE);
+        if seed.is_dir() {
+            copy_dir_recursive(seed, &self.source_dir).map_err(|e| {
+                format!(
+                    "Failed to copy seed source from {} to {}: {}",
+                    seed.display(),
+                    self.source_dir.display(),
+                    e,
+                )
+            })?;
+        } else {
+            tracing::warn!(
+                seed_source = %seed.display(),
+                "Seed source directory not found; creating empty initial commit"
+            );
+        }
+
         let o = Command::new("git")
-            .args(["commit", "--allow-empty", "-m", "Initial commit"])
+            .args(["add", "-A"])
+            .current_dir(&self.source_dir)
+            .output()
+            .map_err(|e| format!("git add (init) failed: {}", e))?;
+        if !o.status.success() {
+            return Err(format!(
+                "git add (init) failed: {}",
+                String::from_utf8_lossy(&o.stderr)
+            ));
+        }
+
+        let o = Command::new("git")
+            .args(["commit", "--allow-empty", "-m", "Initial commit with seed source"])
             .current_dir(&self.source_dir)
             .output()
             .map_err(|e| format!("git commit (init) failed: {}", e))?;
@@ -193,7 +229,7 @@ impl VersionManager {
             ));
         }
 
-        tracing::info!(source_dir = %self.source_dir.display(), "Git repo initialised");
+        tracing::info!(source_dir = %self.source_dir.display(), "Git repo initialised with seed source");
         Ok(())
     }
 
@@ -1128,6 +1164,39 @@ mod tests {
         let detail = mgr.version_detail("V1").unwrap();
         assert_eq!(detail["version"], "V1");
         assert!(!detail["commit"].as_str().unwrap().is_empty());
+    }
+
+    #[test]
+    fn init_copies_seed_source_with_cargo_toml() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mgr = VersionManager::new(tmp.path());
+
+        // allocate_version triggers init_repo_if_needed which should copy
+        // the peripheral seed source into the repo.
+        let info = mgr.allocate_version().expect("V1");
+
+        // The repo must contain a Cargo.toml from the seed source.
+        assert!(
+            info.source_dir.join("Cargo.toml").exists(),
+            "Cargo.toml must exist in source dir after init"
+        );
+        // Also verify `src/main.rs` was copied (the binary entry point).
+        assert!(
+            info.source_dir.join("src").join("main.rs").exists(),
+            "src/main.rs must exist in source dir after init"
+        );
+
+        // The initial commit should track the copied files.
+        let out = Command::new("git")
+            .args(["log", "--oneline", "-1"])
+            .current_dir(&info.source_dir)
+            .output()
+            .unwrap();
+        let msg = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            msg.contains("seed source"),
+            "initial commit message should mention seed source"
+        );
     }
 
     #[test]
