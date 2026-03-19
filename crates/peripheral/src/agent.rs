@@ -1,17 +1,22 @@
+use std::time::Duration;
+
 use tokio::sync::mpsc;
 
 use crate::deepseek::{ChatMessage, DeepSeekClient, StreamEvent};
+use crate::ipc_client;
 use crate::memory::MemoryManager;
 use crate::source::SourceManager;
 use crate::tools::{self, ToolResult};
+
+use reloopy_ipc::messages::{msg_types, Envelope};
 
 const BASE_SYSTEM_PROMPT: &str = r#"You are Reloopy, a self-evolving AI agent written in Rust. You can read and modify your own source code to improve yourself.
 
 ## Source Code Tools
 - read_source_file(path): Read a file from your source code. Path is relative to the peripheral crate root (e.g. "src/main.rs", "Cargo.toml")
 - list_source_files(path): List files in your source directory. Path is relative to the peripheral crate root (e.g. "src/", ".")
-- write_source_file(path, content): Stage changes to a file. Path is relative to crates/peripheral/ (e.g. "src/main.rs"). Provide the FULL file content.
-- submit_update(): Submit all staged changes for compilation and deployment.
+- write_source_file(path, content): Write changes directly to a file in your working directory. Path is relative to crates/peripheral/ (e.g. "src/main.rs"). Provide the FULL file content.
+- submit_update(): Submit the current working directory for compilation and deployment. This tool returns the build/test result. If compilation fails, read the error messages, fix the code with write_source_file, and call submit_update() again.
 
 ## Memory Tools
 - memory_search(query): Search across all memory files for relevant content.
@@ -26,6 +31,7 @@ const BASE_SYSTEM_PROMPT: &str = r#"You are Reloopy, a self-evolving AI agent wr
 - Maintain IPC protocol compatibility (handshake, heartbeat, message handling)
 - Make focused, incremental changes
 - After writing all modified files, call submit_update() to deploy
+- submit_update() returns compilation/test results. If it fails, analyze the errors, fix the code, and re-submit
 - Use memory_append() to record important decisions or context during a session
 - Use memory_write() to persist key facts that should survive across sessions
 "#;
@@ -54,7 +60,6 @@ pub enum AgentEvent {
 
 pub enum AgentOutcome {
     Done,
-    SubmitUpdate(String),
 }
 
 pub struct Agent {
@@ -62,21 +67,27 @@ pub struct Agent {
     source: SourceManager,
     memory: MemoryManager,
     conversation: Vec<ChatMessage>,
+    ipc_tx: mpsc::Sender<Envelope>,
+    update_result_rx: mpsc::Receiver<Envelope>,
 }
 
 impl Agent {
-    pub fn new(deepseek: DeepSeekClient, source: SourceManager, memory: MemoryManager) -> Self {
+    pub fn new(
+        deepseek: DeepSeekClient,
+        source: SourceManager,
+        memory: MemoryManager,
+        ipc_tx: mpsc::Sender<Envelope>,
+        update_result_rx: mpsc::Receiver<Envelope>,
+    ) -> Self {
         let system_prompt = build_system_prompt(&memory);
         Self {
             deepseek,
             source,
             memory,
             conversation: vec![ChatMessage::system(&system_prompt)],
+            ipc_tx,
+            update_result_rx,
         }
-    }
-
-    pub fn source_mut(&mut self) -> &mut SourceManager {
-        &mut self.source
     }
 
     pub async fn handle_input_stream(
@@ -121,8 +132,6 @@ impl Agent {
             if let Some(ref tool_calls) = message.tool_calls {
                 self.conversation.push(message.clone());
 
-                let mut submit_path = None;
-
                 for tc in tool_calls {
                     tracing::debug!(tool = %tc.function.name, "Executing tool");
 
@@ -143,24 +152,26 @@ impl Agent {
                                 .await;
                             self.conversation.push(ChatMessage::tool(&output, &tc.id));
                         }
-                        ToolResult::SubmitUpdate(path) => {
+                        ToolResult::SubmitUpdate(source_path) => {
                             let _ = event_tx
                                 .send(AgentEvent::SubmitUpdate {
-                                    source_path: path.clone(),
+                                    source_path: source_path.clone(),
                                 })
                                 .await;
-                            self.conversation.push(ChatMessage::tool(
-                                "Update packaged and ready for submission.",
-                                &tc.id,
-                            ));
-                            submit_path = Some(path);
+
+                            let result_text =
+                                self.submit_and_wait_result(&source_path, &event_tx).await;
+
+                            let _ = event_tx
+                                .send(AgentEvent::ToolResult {
+                                    name: "submit_update".to_string(),
+                                    output: truncate(&result_text, 500),
+                                })
+                                .await;
+                            self.conversation
+                                .push(ChatMessage::tool(&result_text, &tc.id));
                         }
                     }
-                }
-
-                if let Some(path) = submit_path {
-                    let _ = event_tx.send(AgentEvent::Done).await;
-                    return Ok(AgentOutcome::SubmitUpdate(path));
                 }
             } else {
                 let text = message.content.unwrap_or_default();
@@ -176,9 +187,87 @@ impl Agent {
         }
     }
 
+    /// Send SubmitUpdate to Boot via IPC and wait for the result.
+    async fn submit_and_wait_result(
+        &mut self,
+        source_path: &str,
+        event_tx: &mpsc::Sender<AgentEvent>,
+    ) -> String {
+        let submit = ipc_client::make_submit_update(source_path);
+        if self.ipc_tx.send(submit).await.is_err() {
+            return "Error: Lost connection to Boot".to_string();
+        }
+
+        match tokio::time::timeout(
+            Duration::from_secs(300),
+            self.update_result_rx.recv(),
+        )
+        .await
+        {
+            Ok(Some(envelope)) => {
+                let result_text = format_update_result(&envelope);
+
+                // If Boot sends SHUTDOWN after acceptance, notify frontend
+                if envelope.msg_type == msg_types::SHUTDOWN {
+                    let _ = event_tx
+                        .send(AgentEvent::Error(
+                            "Hot replacement in progress. Shutting down...".into(),
+                        ))
+                        .await;
+                }
+
+                result_text
+            }
+            Ok(None) => "Error: IPC channel closed".to_string(),
+            Err(_) => "Error: Timed out waiting for build result (300s)".to_string(),
+        }
+    }
+
     pub fn reset_conversation(&mut self) {
         let system_prompt = build_system_prompt(&self.memory);
         self.conversation = vec![ChatMessage::system(&system_prompt)];
+    }
+}
+
+/// Format an UPDATE_ACCEPTED or UPDATE_REJECTED envelope into a human-readable string
+/// that is injected back into the Agent's conversation.
+fn format_update_result(envelope: &Envelope) -> String {
+    match envelope.msg_type.as_str() {
+        msg_types::UPDATE_ACCEPTED => {
+            let version = envelope
+                .payload
+                .get("version")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown");
+            format!("Update ACCEPTED — version {} deployed successfully.", version)
+        }
+        msg_types::UPDATE_REJECTED => {
+            let reason = envelope
+                .payload
+                .get("reason")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown");
+            let errors = envelope
+                .payload
+                .get("errors")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let suggestion = envelope
+                .payload
+                .get("suggestion")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+
+            let mut msg = format!("Update REJECTED: {}", reason);
+            if !errors.is_empty() {
+                msg.push_str(&format!("\n\nCompilation errors:\n{}", errors));
+            }
+            if !suggestion.is_empty() {
+                msg.push_str(&format!("\n\nSuggestion: {}", suggestion));
+            }
+            msg
+        }
+        _ => format!("Unexpected response from Boot: {}", envelope.msg_type),
     }
 }
 
@@ -225,5 +314,57 @@ mod tests {
         let result = truncate(&s, 500);
         // Should truncate safely, including 498 ASCII bytes + up to boundary
         assert!(result.ends_with("...(truncated)"));
+    }
+
+    #[test]
+    fn format_update_accepted() {
+        let envelope = Envelope {
+            from: "boot".to_string(),
+            to: "peripheral".to_string(),
+            msg_type: msg_types::UPDATE_ACCEPTED.to_string(),
+            id: "test-1".to_string(),
+            payload: serde_json::json!({"version": "V3"}),
+        };
+        let result = format_update_result(&envelope);
+        assert!(result.contains("ACCEPTED"));
+        assert!(result.contains("V3"));
+    }
+
+    #[test]
+    fn format_update_rejected_with_errors() {
+        let envelope = Envelope {
+            from: "boot".to_string(),
+            to: "peripheral".to_string(),
+            msg_type: msg_types::UPDATE_REJECTED.to_string(),
+            id: "test-2".to_string(),
+            payload: serde_json::json!({
+                "version": "V4",
+                "reason": "compilation_failed",
+                "errors": "error[E0308]: mismatched types",
+                "suggestion": "Check the return type"
+            }),
+        };
+        let result = format_update_result(&envelope);
+        assert!(result.contains("REJECTED"));
+        assert!(result.contains("compilation_failed"));
+        assert!(result.contains("error[E0308]"));
+        assert!(result.contains("Check the return type"));
+    }
+
+    #[test]
+    fn format_update_rejected_minimal() {
+        let envelope = Envelope {
+            from: "boot".to_string(),
+            to: "peripheral".to_string(),
+            msg_type: msg_types::UPDATE_REJECTED.to_string(),
+            id: "test-3".to_string(),
+            payload: serde_json::json!({"version": "V5", "reason": "test_failed"}),
+        };
+        let result = format_update_result(&envelope);
+        assert!(result.contains("REJECTED"));
+        assert!(result.contains("test_failed"));
+        // No errors or suggestion fields
+        assert!(!result.contains("Compilation errors"));
+        assert!(!result.contains("Suggestion"));
     }
 }
