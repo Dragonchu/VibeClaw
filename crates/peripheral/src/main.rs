@@ -154,12 +154,18 @@ async fn main() {
     let deepseek = DeepSeekClient::new(config.api_key, config.api_base_url, config.model);
     let source = SourceManager::new(config.workspace_root);
     let memory = MemoryManager::new(&config.base_dir);
-    let agent = Agent::new(deepseek, source, memory);
 
-    run(agent, ipc, config.heartbeat_interval, config.http_port).await;
+    run(deepseek, source, memory, ipc, config.heartbeat_interval, config.http_port).await;
 }
 
-async fn run(agent: Agent, ipc: IpcHandle, heartbeat_interval: Duration, http_port: u16) {
+async fn run(
+    deepseek: DeepSeekClient,
+    source: SourceManager,
+    memory: MemoryManager,
+    ipc: IpcHandle,
+    heartbeat_interval: Duration,
+    http_port: u16,
+) {
     let ipc_tx = ipc.tx;
     let runlevel = ipc.runlevel;
 
@@ -211,10 +217,10 @@ async fn run(agent: Agent, ipc: IpcHandle, heartbeat_interval: Duration, http_po
         }
     });
 
+    let agent = Agent::new(deepseek, source, memory, ipc_tx, update_result_rx);
+
     let app_state = Arc::new(AppState {
         agent: Mutex::new(agent),
-        ipc_tx,
-        update_result_rx: Mutex::new(update_result_rx),
     });
 
     let router = web::build_router(app_state);

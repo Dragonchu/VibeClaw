@@ -1,5 +1,4 @@
 use std::sync::Arc;
-use std::time::Duration;
 
 use axum::extract::State;
 use axum::http::header;
@@ -11,16 +10,11 @@ use tokio::sync::{mpsc, Mutex};
 use tokio_stream::wrappers::ReceiverStream;
 
 use crate::agent::{Agent, AgentEvent, AgentOutcome};
-use crate::ipc_client;
-
-use reloopy_ipc::messages::{msg_types, Envelope};
 
 const INDEX_HTML: &str = include_str!("static/index.html");
 
 pub struct AppState {
     pub agent: Mutex<Agent>,
-    pub ipc_tx: mpsc::Sender<Envelope>,
-    pub update_result_rx: Mutex<mpsc::Receiver<Envelope>>,
 }
 
 pub fn build_router(state: Arc<AppState>) -> Router {
@@ -75,57 +69,6 @@ async fn chat(
         }
 
         match agent_handle.await {
-            Ok(Ok(AgentOutcome::SubmitUpdate(source_path))) => {
-                let submit = ipc_client::make_submit_update(&source_path);
-                if state.ipc_tx.send(submit).await.is_err() {
-                    let err_ev = AgentEvent::Error("Lost connection to Boot".into());
-                    let _ = sse_tx
-                        .send(Ok(Event::default().data(serde_json::to_string(&err_ev).unwrap())))
-                        .await;
-                    return;
-                }
-
-                let mut rx = state.update_result_rx.lock().await;
-                match tokio::time::timeout(Duration::from_secs(300), rx.recv()).await {
-                    Ok(Some(msg)) => {
-                        let update_ev = build_update_event(&msg);
-                        let _ = sse_tx
-                            .send(Ok(Event::default().data(serde_json::to_string(&update_ev).unwrap())))
-                            .await;
-
-                        if msg.msg_type == msg_types::SHUTDOWN {
-                            let _ = sse_tx
-                                .send(Ok(Event::default().data(
-                                    serde_json::to_string(&AgentEvent::Error(
-                                        "Hot replacement in progress. Shutting down...".into(),
-                                    ))
-                                    .unwrap(),
-                                )))
-                                .await;
-                        }
-                    }
-                    Ok(None) => {
-                        let _ = sse_tx
-                            .send(Ok(Event::default().data(
-                                serde_json::to_string(&AgentEvent::Error("IPC channel closed".into())).unwrap(),
-                            )))
-                            .await;
-                    }
-                    Err(_) => {
-                        let _ = sse_tx
-                            .send(Ok(Event::default().data(
-                                serde_json::to_string(&AgentEvent::Error(
-                                    "Timed out waiting for build result".into(),
-                                ))
-                                .unwrap(),
-                            )))
-                            .await;
-                    }
-                }
-
-                let mut agent = state.agent.lock().await;
-                agent.source_mut().reset_staging();
-            }
             Ok(Ok(AgentOutcome::Done)) => {}
             Ok(Err(e)) => {
                 let err_ev = AgentEvent::Error(e);
@@ -143,26 +86,4 @@ async fn chat(
     });
 
     Sse::new(ReceiverStream::new(sse_rx)).keep_alive(KeepAlive::default())
-}
-
-fn build_update_event(envelope: &Envelope) -> AgentEvent {
-    match envelope.msg_type.as_str() {
-        msg_types::UPDATE_ACCEPTED => {
-            let version = envelope
-                .payload
-                .get("version")
-                .and_then(|v| v.as_str())
-                .unwrap_or("unknown");
-            AgentEvent::Content(format!("\n**Update ACCEPTED** — version {} deployed\n", version))
-        }
-        msg_types::UPDATE_REJECTED => {
-            let reason = envelope
-                .payload
-                .get("reason")
-                .and_then(|v| v.as_str())
-                .unwrap_or("unknown");
-            AgentEvent::Error(format!("Update REJECTED: {}", reason))
-        }
-        _ => AgentEvent::Error(format!("Unexpected message: {}", envelope.msg_type)),
-    }
 }

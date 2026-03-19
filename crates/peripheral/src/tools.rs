@@ -42,7 +42,7 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
             type_: "function".to_string(),
             function: FunctionDefinition {
                 name: "write_source_file".to_string(),
-                description: "Write content to a file in the staging area. This stages changes for submission, not the live code. Path is relative to crates/peripheral/ (e.g. 'src/main.rs')".to_string(),
+                description: "Write content to a file in the agent's source code working directory. Changes are written directly to disk. Path is relative to crates/peripheral/ (e.g. 'src/main.rs'). Provide the FULL file content.".to_string(),
                 parameters: serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -63,7 +63,7 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
             type_: "function".to_string(),
             function: FunctionDefinition {
                 name: "submit_update".to_string(),
-                description: "Submit all staged changes for compilation and deployment. Call this after writing all modifications via write_source_file.".to_string(),
+                description: "Submit the current working directory for compilation and deployment. Returns the compilation/test result. If compilation fails, read the errors and fix the code, then submit again.".to_string(),
                 parameters: serde_json::json!({
                     "type": "object",
                     "properties": {},
@@ -181,17 +181,14 @@ pub fn execute_tool(name: &str, arguments: &str, source: &mut SourceManager, mem
         "write_source_file" => {
             let path = args["path"].as_str().unwrap_or("");
             let content = args["content"].as_str().unwrap_or("");
-            match source.write_staged_file(path, content) {
+            match source.write_file(path, content) {
                 Ok(()) => ToolResult::Output(format!("Written: {}", path)),
                 Err(e) => ToolResult::Output(format!("Error: {}", e)),
             }
         }
-        "submit_update" => match source.pack_workspace() {
-            Ok(staging_path) => {
-                ToolResult::SubmitUpdate(staging_path.to_string_lossy().to_string())
-            }
-            Err(e) => ToolResult::Output(format!("Error packing workspace: {}", e)),
-        },
+        "submit_update" => {
+            ToolResult::SubmitUpdate(source.workspace_root().to_string_lossy().to_string())
+        }
         "memory_search" => {
             let query = args["query"].as_str().unwrap_or("");
             match memory.search(query) {
