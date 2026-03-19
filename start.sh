@@ -219,8 +219,12 @@ if [[ "${SKIP_PERIPHERAL}" -eq 0 ]]; then
     sleep 2
     check_alive "reloopy-peripheral" "$PERIPHERAL_PID" "${LOG_DIR}/peripheral.log"
     ok "reloopy-peripheral running  (pid ${PERIPHERAL_PID}, log: .reloopy/logs/peripheral.log)"
+    # Extract the actual bound port from the peripheral log (may differ from
+    # the configured port when the default was already in use).
+    ACTUAL_PORT=$(sed -n 's/.*HTTP server listening on http:\/\/[^:]*:\([0-9]*\).*/\1/p' "${LOG_DIR}/peripheral.log" | tail -1)
+    ACTUAL_PORT="${ACTUAL_PORT:-${RELOOPY_HTTP_PORT:-7700}}"
     echo ""
-    echo -e "${BOLD}  ➜  Open http://127.0.0.1:${RELOOPY_HTTP_PORT:-7700}${RESET}"
+    echo -e "${BOLD}  ➜  Open http://127.0.0.1:${ACTUAL_PORT}${RESET}"
 fi
 
 echo ""
