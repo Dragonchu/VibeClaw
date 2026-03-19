@@ -93,6 +93,9 @@ const PROBATION_DURATION_SECS: u64 = 3600;
 const PROBATION_CHECK_INTERVAL_SECS: u64 = 30;
 const RESOURCE_CHECK_INTERVAL_SECS: u64 = 10;
 
+/// Capacity of the boot message channel (kernel ← connection handlers).
+const BOOT_MESSAGE_CHANNEL_SIZE: usize = 256;
+
 struct ProbationState {
     version: String,
     binary_path: String,
@@ -2053,7 +2056,7 @@ pub struct RuntimeSupervisor;
 impl RuntimeSupervisor {
     pub async fn run(config: BootConfig) -> Result<(), Box<dyn std::error::Error>> {
         // boot_rx belongs to the kernel from birth — not created inside the router
-        let (boot_tx, boot_rx) = tokio::sync::mpsc::channel(256);
+        let (boot_tx, boot_rx) = tokio::sync::mpsc::channel(BOOT_MESSAGE_CHANNEL_SIZE);
 
         // Router actor: single owner of the peer routing table (no Arc<RwLock>)
         let (router_actor, router_handle) = RouterActor::new(config.sock_path.clone(), boot_tx);

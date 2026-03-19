@@ -24,6 +24,16 @@ use reloopy_ipc::wire;
 // ---------------------------------------------------------------------------
 // Peer handle (internal to the actor)
 // ---------------------------------------------------------------------------
+// Channel capacity constants
+// ---------------------------------------------------------------------------
+
+/// Capacity of the actor's command channel (RouterCommand mailbox).
+const ROUTER_CMD_CHANNEL_SIZE: usize = 256;
+
+/// Capacity of each peer's outbound envelope channel.
+const PEER_OUTBOUND_CHANNEL_SIZE: usize = 64;
+
+// ---------------------------------------------------------------------------
 
 /// A handle representing a connected peer.
 #[derive(Debug)]
@@ -160,7 +170,7 @@ impl RouterActor {
     /// `boot_tx` is the sender side of the channel owned by the kernel;
     /// the kernel keeps the receiver from birth.
     pub fn new(sock_path: PathBuf, boot_tx: mpsc::Sender<Envelope>) -> (Self, RouterHandle) {
-        let (cmd_tx, cmd_rx) = mpsc::channel(256);
+        let (cmd_tx, cmd_rx) = mpsc::channel(ROUTER_CMD_CHANNEL_SIZE);
         let handle = RouterHandle { cmd_tx };
         let actor = Self {
             peers: HashMap::new(),
@@ -287,7 +297,7 @@ async fn handle_connection(
     tracing::info!(peer = %identity, "New peer connected");
 
     // Create a channel for outgoing messages to this peer
-    let (tx, mut rx) = mpsc::channel::<Envelope>(64);
+    let (tx, mut rx) = mpsc::channel::<Envelope>(PEER_OUTBOUND_CHANNEL_SIZE);
 
     // Register the peer via the router actor
     handle.register_peer(identity.clone(), tx).await;
