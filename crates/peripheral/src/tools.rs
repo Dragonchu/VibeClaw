@@ -271,7 +271,7 @@ mod tests {
     }
 
     #[test]
-    fn write_source_file_with_empty_arguments_returns_path_error() {
+    fn write_source_file_with_empty_arguments_returns_parse_error() {
         let (_dir, mut source, mut memory) = temp_tools();
         let result = execute_tool("write_source_file", "", &mut source, &mut memory);
         match result {
