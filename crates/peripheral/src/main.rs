@@ -1,6 +1,7 @@
 mod agent;
 mod deepseek;
 mod ipc_client;
+mod memory;
 mod migration;
 mod source;
 mod tools;
@@ -17,6 +18,7 @@ use reloopy_ipc::messages::{Envelope, msg_types};
 use crate::agent::Agent;
 use crate::deepseek::DeepSeekClient;
 use crate::ipc_client::IpcHandle;
+use crate::memory::MemoryManager;
 use crate::source::SourceManager;
 use crate::web::AppState;
 
@@ -30,6 +32,7 @@ struct Config {
     api_base_url: Option<String>,
     model: Option<String>,
     http_port: u16,
+    base_dir: PathBuf,
 }
 
 impl Config {
@@ -65,6 +68,7 @@ impl Config {
             api_base_url,
             model,
             http_port,
+            base_dir,
         })
     }
 }
@@ -149,7 +153,8 @@ async fn main() {
 
     let deepseek = DeepSeekClient::new(config.api_key, config.api_base_url, config.model);
     let source = SourceManager::new(config.workspace_root);
-    let agent = Agent::new(deepseek, source);
+    let memory = MemoryManager::new(&config.base_dir);
+    let agent = Agent::new(deepseek, source, memory);
 
     run(agent, ipc, config.heartbeat_interval, config.http_port).await;
 }
