@@ -189,21 +189,20 @@ impl VersionManager {
         // Copy the seed peripheral source into the fresh repo so it is
         // compilable from the very first version branch.
         let seed = Path::new(SEED_SOURCE);
-        if seed.is_dir() {
-            copy_dir_recursive(seed, &self.source_dir).map_err(|e| {
-                format!(
-                    "Failed to copy seed source from {} to {}: {}",
-                    seed.display(),
-                    self.source_dir.display(),
-                    e,
-                )
-            })?;
-        } else {
-            tracing::warn!(
-                seed_source = %seed.display(),
-                "Seed source directory not found; creating empty initial commit"
-            );
+        if !seed.is_dir() {
+            return Err(format!(
+                "Seed source directory not found at {}; cannot initialise peripheral repo",
+                seed.display(),
+            ));
         }
+        copy_dir_recursive(seed, &self.source_dir).map_err(|e| {
+            format!(
+                "Failed to copy seed source from {} to {}: {}",
+                seed.display(),
+                self.source_dir.display(),
+                e,
+            )
+        })?;
 
         let o = Command::new("git")
             .args(["add", "-A"])
@@ -218,7 +217,7 @@ impl VersionManager {
         }
 
         let o = Command::new("git")
-            .args(["commit", "--allow-empty", "-m", "Initial commit with seed source"])
+            .args(["commit", "-m", "Initial commit with seed source"])
             .current_dir(&self.source_dir)
             .output()
             .map_err(|e| format!("git commit (init) failed: {}", e))?;

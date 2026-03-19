@@ -5,7 +5,8 @@ fn main() {
     // manifest.  During development `CARGO_MANIFEST_DIR` points to
     // `crates/boot/`, so `../../crates/peripheral` yields the peripheral
     // crate root.
-    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap();
+    let manifest_dir =
+        std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR must be set by Cargo");
     let seed_source = Path::new(&manifest_dir)
         .join("..")
         .join("..")
