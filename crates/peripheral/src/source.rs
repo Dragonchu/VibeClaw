@@ -32,10 +32,7 @@ impl SourceManager {
             return Err(format!("File not found: {}", relative_path));
         }
         if path.is_dir() {
-            return Err(format!(
-                "Path is a directory, not a file: {}",
-                relative_path
-            ));
+            return Err(self.directory_hint(relative_path));
         }
         fs::read_to_string(&path).map_err(|e| format!("Read error: {}", e))
     }
@@ -63,10 +60,7 @@ impl SourceManager {
             return Err("Path traversal not allowed".to_string());
         }
         if target.is_dir() {
-            return Err(format!(
-                "Path is a directory, not a file: {}",
-                relative_path
-            ));
+            return Err(self.directory_hint(relative_path));
         }
 
         if let Some(parent) = target.parent() {
@@ -76,6 +70,30 @@ impl SourceManager {
         fs::write(&target, content).map_err(|e| format!("Write error: {}", e))?;
         tracing::info!(path = %relative_path, "Source file written");
         Ok(())
+    }
+
+    /// Build an error message that tells the agent what files live inside the
+    /// directory it accidentally targeted, so it can self-correct.
+    fn directory_hint(&self, relative_path: &str) -> String {
+        let dir = self.peripheral_root.join(relative_path);
+        let mut files = Vec::new();
+        let _ = collect_files_recursive(&dir, &self.peripheral_root, &mut files);
+        files.sort();
+
+        let mut msg = format!(
+            "Path '{}' is a directory, not a file. \
+             You must specify a file path, e.g. 'src/main.rs'.",
+            relative_path
+        );
+        if !files.is_empty() {
+            msg.push_str("\nFiles in this directory:\n");
+            for f in &files {
+                msg.push_str("  ");
+                msg.push_str(f);
+                msg.push('\n');
+            }
+        }
+        msg
     }
 }
 
@@ -110,29 +128,45 @@ mod tests {
     }
 
     #[test]
-    fn write_file_to_existing_directory_returns_error() {
+    fn write_file_to_existing_directory_returns_error_with_hint() {
         let (_dir, mut mgr) = temp_source();
-        // "src" is an existing directory
+        // Write a file so the directory listing is non-empty
+        mgr.write_file("src/lib.rs", "// lib").unwrap();
         let result = mgr.write_file("src", "hello");
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(
-            err.contains("directory"),
+            err.contains("is a directory"),
             "expected directory error, got: {}",
+            err
+        );
+        assert!(
+            err.contains("src/lib.rs"),
+            "expected file listing in hint, got: {}",
             err
         );
     }
 
     #[test]
-    fn write_file_to_dot_returns_error() {
+    fn write_file_to_dot_returns_error_with_hint() {
         let (_dir, mut mgr) = temp_source();
-        // "." resolves to peripheral_root itself, which is a directory
-        let result = mgr.write_file(".", "hello");
+        mgr.write_file("Cargo.toml", "[package]").unwrap();
+        let result = mgr.write_file(".", "[package]");
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(
-            err.contains("directory"),
+            err.contains("is a directory"),
             "expected directory error, got: {}",
+            err
+        );
+        assert!(
+            err.contains("You must specify a file path"),
+            "expected guidance in hint, got: {}",
+            err
+        );
+        assert!(
+            err.contains("Cargo.toml"),
+            "expected file listing in hint, got: {}",
             err
         );
     }
@@ -147,14 +181,25 @@ mod tests {
     }
 
     #[test]
-    fn read_file_on_directory_returns_error() {
+    fn read_file_on_directory_returns_error_with_hint() {
         let (_dir, mgr) = temp_source();
+        // Create a file so listing is non-empty
+        fs::write(
+            mgr.peripheral_root().join("src").join("main.rs"),
+            "fn main() {}",
+        )
+        .unwrap();
         let result = mgr.read_file("src");
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(
-            err.contains("directory"),
+            err.contains("is a directory"),
             "expected directory error, got: {}",
+            err
+        );
+        assert!(
+            err.contains("src/main.rs"),
+            "expected file listing in hint, got: {}",
             err
         );
     }
