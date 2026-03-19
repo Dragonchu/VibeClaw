@@ -29,7 +29,11 @@ impl SourceManager {
             return Err("Path traversal not allowed".to_string());
         }
         if !path.exists() {
-            return Err(format!("File not found: {}", relative_path));
+            return Err(format!(
+                "File not found: '{}' (resolved to {})",
+                relative_path,
+                path.display()
+            ));
         }
         if path.is_dir() {
             return Err(self.directory_hint(relative_path));
@@ -43,7 +47,11 @@ impl SourceManager {
             return Err("Path traversal not allowed".to_string());
         }
         if !dir.exists() {
-            return Err(format!("Directory not found: {}", relative_path));
+            return Err(format!(
+                "Directory not found: '{}' (resolved to {})",
+                relative_path,
+                dir.display()
+            ));
         }
 
         let mut files = Vec::new();
@@ -67,8 +75,14 @@ impl SourceManager {
             fs::create_dir_all(parent).map_err(|e| format!("Failed to create dirs: {}", e))?;
         }
 
-        fs::write(&target, content).map_err(|e| format!("Write error: {}", e))?;
-        tracing::info!(path = %relative_path, "Source file written");
+        fs::write(&target, content).map_err(|e| {
+            format!(
+                "Write error: {} (resolved to {})",
+                e,
+                target.display()
+            )
+        })?;
+        tracing::info!(path = %relative_path, resolved = %target.display(), "Source file written");
         Ok(())
     }
 
@@ -81,9 +95,12 @@ impl SourceManager {
         files.sort();
 
         let mut msg = format!(
-            "Path '{}' is a directory, not a file. \
+            "Path '{}' is a directory, not a file (resolved to {}). \
+             All paths are relative to the peripheral crate root: {}. \
              You must specify a file path, e.g. 'src/main.rs'.",
-            relative_path
+            relative_path,
+            dir.display(),
+            self.peripheral_root.display(),
         );
         if !files.is_empty() {
             msg.push_str("\nFiles in this directory:\n");
@@ -145,6 +162,17 @@ mod tests {
             "expected file listing in hint, got: {}",
             err
         );
+        // Must include the resolved absolute path so the agent can debug
+        assert!(
+            err.contains("resolved to"),
+            "expected resolved absolute path, got: {}",
+            err
+        );
+        assert!(
+            err.contains("peripheral crate root:"),
+            "expected peripheral root path, got: {}",
+            err
+        );
     }
 
     #[test]
@@ -167,6 +195,11 @@ mod tests {
         assert!(
             err.contains("Cargo.toml"),
             "expected file listing in hint, got: {}",
+            err
+        );
+        assert!(
+            err.contains("resolved to"),
+            "expected resolved absolute path, got: {}",
             err
         );
     }
@@ -200,6 +233,34 @@ mod tests {
         assert!(
             err.contains("src/main.rs"),
             "expected file listing in hint, got: {}",
+            err
+        );
+        assert!(
+            err.contains("resolved to"),
+            "expected resolved absolute path, got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn read_file_not_found_includes_resolved_path() {
+        let (_dir, mgr) = temp_source();
+        let result = mgr.read_file("nonexistent.rs");
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("File not found"),
+            "expected not found error, got: {}",
+            err
+        );
+        assert!(
+            err.contains("resolved to"),
+            "expected resolved absolute path, got: {}",
+            err
+        );
+        assert!(
+            err.contains("nonexistent.rs"),
+            "expected original path in error, got: {}",
             err
         );
     }
