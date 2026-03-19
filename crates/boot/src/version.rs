@@ -21,6 +21,15 @@ const ROLLBACK_REF: &str = "refs/reloopy/rollback";
 /// first time.  Set by `crates/boot/build.rs`.
 const SEED_SOURCE: &str = env!("RELOOPY_SEED_SOURCE");
 
+/// Compile-time path to the IPC crate source tree.  Copied alongside the
+/// peripheral crate so the seed workspace can compile independently.
+/// Set by `crates/boot/build.rs`.
+const SEED_IPC: &str = env!("RELOOPY_SEED_IPC");
+
+/// Root workspace `Cargo.toml`, embedded at compile time.  Used to derive
+/// a standalone workspace manifest for the seed `peripheral/source/` repo.
+const ROOT_WORKSPACE_TOML: &str = include_str!("../../../Cargo.toml");
+
 #[derive(Debug)]
 pub struct VersionManager {
     /// `~/.reloopy/peripheral`
@@ -186,8 +195,9 @@ impl VersionManager {
             }
         }
 
-        // Copy the seed peripheral source into the fresh repo so it is
-        // compilable from the very first version branch.
+        // Build an independent workspace so the seed source is compilable
+        // without the parent workspace.  Copy both crates/peripheral and
+        // crates/ipc, then generate a standalone workspace Cargo.toml.
         let seed = Path::new(SEED_SOURCE);
         if !seed.is_dir() {
             return Err(format!(
@@ -195,13 +205,36 @@ impl VersionManager {
                 seed.display(),
             ));
         }
-        copy_dir_recursive(seed, &self.source_dir).map_err(|e| {
+        let seed_ipc = Path::new(SEED_IPC);
+        if !seed_ipc.is_dir() {
+            return Err(format!(
+                "Seed IPC directory not found at {}; cannot initialise peripheral repo",
+                seed_ipc.display(),
+            ));
+        }
+
+        let crates_dir = self.source_dir.join("crates");
+        copy_dir_recursive(seed, &crates_dir.join("peripheral")).map_err(|e| {
             format!(
-                "Failed to copy seed source from {} to {}: {}",
+                "Failed to copy seed peripheral from {} to {}: {}",
                 seed.display(),
-                self.source_dir.display(),
+                crates_dir.join("peripheral").display(),
                 e,
             )
+        })?;
+        copy_dir_recursive(seed_ipc, &crates_dir.join("ipc")).map_err(|e| {
+            format!(
+                "Failed to copy seed ipc from {} to {}: {}",
+                seed_ipc.display(),
+                crates_dir.join("ipc").display(),
+                e,
+            )
+        })?;
+
+        // Write the standalone workspace manifest.
+        let workspace_toml = generate_seed_workspace_toml();
+        fs::write(self.source_dir.join("Cargo.toml"), workspace_toml).map_err(|e| {
+            format!("Failed to write workspace Cargo.toml: {}", e)
         })?;
 
         let o = Command::new("git")
@@ -814,6 +847,34 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
+/// Generate a standalone workspace `Cargo.toml` from the root workspace
+/// manifest.  The members list is replaced to contain only `crates/ipc`
+/// and `crates/peripheral` so the seed repo can compile independently.
+fn generate_seed_workspace_toml() -> String {
+    let mut result = String::new();
+    let mut in_members = false;
+    for line in ROOT_WORKSPACE_TOML.lines() {
+        if line.starts_with("members") {
+            result.push_str("members = [\n");
+            result.push_str("    \"crates/ipc\",\n");
+            result.push_str("    \"crates/peripheral\",\n");
+            result.push_str("]\n");
+            in_members = true;
+            continue;
+        }
+        if in_members {
+            // Skip original member entries until closing `]`.
+            if line.trim() == "]" {
+                in_members = false;
+            }
+            continue;
+        }
+        result.push_str(line);
+        result.push('\n');
+    }
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1171,18 +1232,41 @@ mod tests {
         let mgr = VersionManager::new(tmp.path());
 
         // allocate_version triggers init_repo_if_needed which should copy
-        // the peripheral seed source into the repo.
+        // the peripheral seed source into the repo as a workspace.
         let info = mgr.allocate_version().expect("V1");
 
-        // The repo must contain a Cargo.toml from the seed source.
+        // The workspace root must have a Cargo.toml.
         assert!(
             info.source_dir.join("Cargo.toml").exists(),
-            "Cargo.toml must exist in source dir after init"
+            "Workspace Cargo.toml must exist in source dir after init"
+        );
+        // Peripheral crate must be under crates/peripheral/.
+        assert!(
+            info.source_dir
+                .join("crates")
+                .join("peripheral")
+                .join("Cargo.toml")
+                .exists(),
+            "crates/peripheral/Cargo.toml must exist in source dir after init"
+        );
+        // IPC crate must be under crates/ipc/.
+        assert!(
+            info.source_dir
+                .join("crates")
+                .join("ipc")
+                .join("Cargo.toml")
+                .exists(),
+            "crates/ipc/Cargo.toml must exist in source dir after init"
         );
         // Also verify `src/main.rs` was copied (the binary entry point).
         assert!(
-            info.source_dir.join("src").join("main.rs").exists(),
-            "src/main.rs must exist in source dir after init"
+            info.source_dir
+                .join("crates")
+                .join("peripheral")
+                .join("src")
+                .join("main.rs")
+                .exists(),
+            "crates/peripheral/src/main.rs must exist in source dir after init"
         );
 
         // The initial commit should track the copied files.
@@ -1195,6 +1279,38 @@ mod tests {
         assert!(
             msg.contains("seed source"),
             "initial commit message should mention seed source"
+        );
+    }
+
+    #[test]
+    fn seed_workspace_toml_has_correct_members() {
+        let toml = generate_seed_workspace_toml();
+        // Must contain the two required members.
+        assert!(
+            toml.contains("\"crates/ipc\""),
+            "workspace must list crates/ipc as member"
+        );
+        assert!(
+            toml.contains("\"crates/peripheral\""),
+            "workspace must list crates/peripheral as member"
+        );
+        // Must NOT contain other workspace members from the root.
+        assert!(
+            !toml.contains("\"crates/boot\""),
+            "workspace must not list crates/boot"
+        );
+        assert!(
+            !toml.contains("\"crates/admin\""),
+            "workspace must not list crates/admin"
+        );
+        // Must preserve workspace-level package and dependencies.
+        assert!(
+            toml.contains("[workspace.package]"),
+            "workspace must have [workspace.package]"
+        );
+        assert!(
+            toml.contains("[workspace.dependencies]"),
+            "workspace must have [workspace.dependencies]"
         );
     }
 
