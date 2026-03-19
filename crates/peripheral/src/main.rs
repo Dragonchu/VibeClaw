@@ -235,7 +235,13 @@ async fn run(agent: Agent, ipc: IpcHandle, heartbeat_interval: Duration, http_po
         }
     };
 
-    let actual_addr = listener.local_addr().unwrap_or(addr);
+    let actual_addr = match listener.local_addr() {
+        Ok(a) => a,
+        Err(e) => {
+            tracing::error!("Failed to retrieve local address from listener: {}", e);
+            std::process::exit(1);
+        }
+    };
     tracing::info!("HTTP server listening on http://{}", actual_addr);
 
     let shutdown = shutdown_notify.clone();
