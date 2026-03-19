@@ -210,11 +210,10 @@ mod tests {
 
     #[test]
     fn truncate_multibyte_utf8_does_not_panic() {
-        // Each Chinese character is 3 bytes in UTF-8.
-        // 200 chars × 3 bytes = 600 bytes total.
-        let s: String = "代理".repeat(100); // 200 chars, 600 bytes
+        // "代理" is 2 chars, each 3 bytes in UTF-8; repeated 100 times = 200 chars, 600 bytes.
+        // Truncates at a valid UTF-8 boundary when byte limit falls mid-character.
+        let s: String = "代理".repeat(100);
         let result = truncate(&s, 500);
-        // 500 / 3 = 166.66, so we get 166 full chars (498 bytes)
         assert!(result.ends_with("...(truncated)"));
         assert!(result.len() < 600);
     }
