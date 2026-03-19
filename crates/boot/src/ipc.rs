@@ -362,3 +362,275 @@ async fn handle_connection(
 
     Ok(())
 }
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+    use tokio::sync::mpsc;
+
+    /// Helper: create a RouterActor + RouterHandle (without binding a UDS).
+    /// Returns (handle, cmd_rx, boot_tx) so tests can drive the actor directly.
+    fn make_handle() -> (RouterHandle, mpsc::Receiver<RouterCommand>, mpsc::Sender<Envelope>) {
+        let (boot_tx, _boot_rx) = mpsc::channel(16);
+        let (cmd_tx, cmd_rx) = mpsc::channel(256);
+        let handle = RouterHandle { cmd_tx };
+        (handle, cmd_rx, boot_tx)
+    }
+
+    /// Create a full RouterActor (without UDS) and return both sides.
+    fn make_actor() -> (RouterActor, RouterHandle) {
+        let (boot_tx, _boot_rx) = mpsc::channel(16);
+        RouterActor::new(PathBuf::from("/tmp/test-reloopy.sock"), boot_tx)
+    }
+
+    // -- RouterHandle tests ------------------------------------------------
+
+    #[tokio::test]
+    async fn handle_send_to_returns_error_when_actor_stopped() {
+        let (handle, cmd_rx, _boot_tx) = make_handle();
+        drop(cmd_rx); // Actor is gone
+
+        let env = Envelope {
+            from: "test".into(),
+            to: "peer".into(),
+            msg_type: "test".into(),
+            id: "1".into(),
+            payload: serde_json::Value::Null,
+        };
+        let result = handle.send_to("peer", env).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("stopped"));
+    }
+
+    #[tokio::test]
+    async fn handle_connected_peers_returns_empty_when_actor_stopped() {
+        let (handle, cmd_rx, _boot_tx) = make_handle();
+        drop(cmd_rx);
+
+        let peers = handle.connected_peers().await;
+        assert!(peers.is_empty());
+    }
+
+    #[tokio::test]
+    async fn handle_is_clone() {
+        let (handle, _cmd_rx, _boot_tx) = make_handle();
+        let handle2 = handle.clone();
+        // Both handles should be functional — just verify they compile & exist
+        drop(handle);
+        drop(handle2);
+    }
+
+    // -- RouterActor command handling tests ---------------------------------
+
+    #[tokio::test]
+    async fn actor_register_and_send_to() {
+        let (mut actor, handle) = make_actor();
+
+        // Spawn actor processing in background
+        let actor_task = tokio::spawn(async move {
+            // Process a few commands then stop
+            for _ in 0..3 {
+                if let Some(cmd) = actor.cmd_rx.recv().await {
+                    actor.handle_command(cmd).await;
+                }
+            }
+        });
+
+        // Register a peer
+        let (peer_tx, mut peer_rx) = mpsc::channel(16);
+        handle.register_peer("compiler".into(), peer_tx).await;
+
+        // Send a message to the peer
+        let env = Envelope {
+            from: "boot".into(),
+            to: "compiler".into(),
+            msg_type: "test".into(),
+            id: "1".into(),
+            payload: serde_json::Value::Null,
+        };
+        let result = handle.send_to("compiler", env.clone()).await;
+        assert!(result.is_ok());
+
+        // Peer should receive the message
+        let received = peer_rx.recv().await.unwrap();
+        assert_eq!(received.from, "boot");
+        assert_eq!(received.to, "compiler");
+
+        actor_task.abort();
+    }
+
+    #[tokio::test]
+    async fn actor_send_to_unknown_peer_returns_error() {
+        let (mut actor, handle) = make_actor();
+
+        let actor_task = tokio::spawn(async move {
+            if let Some(cmd) = actor.cmd_rx.recv().await {
+                actor.handle_command(cmd).await;
+            }
+        });
+
+        let env = Envelope {
+            from: "boot".into(),
+            to: "ghost".into(),
+            msg_type: "test".into(),
+            id: "1".into(),
+            payload: serde_json::Value::Null,
+        };
+        let result = handle.send_to("ghost", env).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("not connected"));
+
+        actor_task.abort();
+    }
+
+    #[tokio::test]
+    async fn actor_remove_peer_then_send_fails() {
+        let (mut actor, handle) = make_actor();
+
+        let actor_task = tokio::spawn(async move {
+            for _ in 0..4 {
+                if let Some(cmd) = actor.cmd_rx.recv().await {
+                    actor.handle_command(cmd).await;
+                }
+            }
+        });
+
+        let (peer_tx, _peer_rx) = mpsc::channel(16);
+        handle.register_peer("compiler".into(), peer_tx).await;
+
+        // Remove the peer
+        handle.remove_peer("compiler").await;
+
+        // Send should now fail
+        let env = Envelope {
+            from: "boot".into(),
+            to: "compiler".into(),
+            msg_type: "test".into(),
+            id: "1".into(),
+            payload: serde_json::Value::Null,
+        };
+        let result = handle.send_to("compiler", env).await;
+        assert!(result.is_err());
+
+        actor_task.abort();
+    }
+
+    #[tokio::test]
+    async fn actor_broadcast_reaches_all_peers() {
+        let (mut actor, handle) = make_actor();
+
+        let actor_task = tokio::spawn(async move {
+            for _ in 0..4 {
+                if let Some(cmd) = actor.cmd_rx.recv().await {
+                    actor.handle_command(cmd).await;
+                }
+            }
+        });
+
+        let (tx1, mut rx1) = mpsc::channel(16);
+        let (tx2, mut rx2) = mpsc::channel(16);
+        handle.register_peer("a".into(), tx1).await;
+        handle.register_peer("b".into(), tx2).await;
+
+        let env = Envelope {
+            from: "boot".into(),
+            to: "".into(),
+            msg_type: "runlevel_change".into(),
+            id: "".into(),
+            payload: serde_json::Value::Null,
+        };
+        handle.broadcast(env).await;
+
+        // Both peers should receive
+        let m1 = rx1.recv().await.unwrap();
+        let m2 = rx2.recv().await.unwrap();
+        assert_eq!(m1.msg_type, "runlevel_change");
+        assert_eq!(m2.msg_type, "runlevel_change");
+
+        actor_task.abort();
+    }
+
+    #[tokio::test]
+    async fn actor_connected_peers_returns_registered() {
+        let (mut actor, handle) = make_actor();
+
+        let actor_task = tokio::spawn(async move {
+            for _ in 0..4 {
+                if let Some(cmd) = actor.cmd_rx.recv().await {
+                    actor.handle_command(cmd).await;
+                }
+            }
+        });
+
+        let (tx1, _rx1) = mpsc::channel(16);
+        let (tx2, _rx2) = mpsc::channel(16);
+        handle.register_peer("compiler".into(), tx1).await;
+        handle.register_peer("judge".into(), tx2).await;
+
+        let mut peers = handle.connected_peers().await;
+        peers.sort();
+        assert_eq!(peers, vec!["compiler", "judge"]);
+
+        actor_task.abort();
+    }
+
+    #[tokio::test]
+    async fn actor_remove_idempotent() {
+        let (mut actor, handle) = make_actor();
+
+        let actor_task = tokio::spawn(async move {
+            for _ in 0..3 {
+                if let Some(cmd) = actor.cmd_rx.recv().await {
+                    actor.handle_command(cmd).await;
+                }
+            }
+        });
+
+        // Remove a peer that was never registered — should not panic
+        handle.remove_peer("nonexistent").await;
+        // Remove again
+        handle.remove_peer("nonexistent").await;
+
+        let peers = handle.connected_peers().await;
+        assert!(peers.is_empty());
+
+        actor_task.abort();
+    }
+
+    #[tokio::test]
+    async fn handle_send_convenience_routes_by_to_field() {
+        let (mut actor, handle) = make_actor();
+
+        let actor_task = tokio::spawn(async move {
+            for _ in 0..2 {
+                if let Some(cmd) = actor.cmd_rx.recv().await {
+                    actor.handle_command(cmd).await;
+                }
+            }
+        });
+
+        let (peer_tx, mut peer_rx) = mpsc::channel(16);
+        handle.register_peer("peripheral".into(), peer_tx).await;
+
+        let env = Envelope {
+            from: "boot".into(),
+            to: "peripheral".into(),
+            msg_type: "welcome".into(),
+            id: "42".into(),
+            payload: serde_json::Value::Null,
+        };
+        let result = handle.send(env).await;
+        assert!(result.is_ok());
+
+        let received = peer_rx.recv().await.unwrap();
+        assert_eq!(received.to, "peripheral");
+        assert_eq!(received.id, "42");
+
+        actor_task.abort();
+    }
+}
