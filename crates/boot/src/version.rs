@@ -477,6 +477,13 @@ impl VersionManager {
                     "git worktree remove failed; falling back to manual removal"
                 );
                 let _ = fs::remove_dir_all(&wt_dir);
+                // Prune stale bookkeeping left by the manual removal so
+                // `git worktree add` below does not fail with "already
+                // checked out" / "already registered" errors.
+                let _ = Command::new("git")
+                    .args(["worktree", "prune"])
+                    .current_dir(&self.source_dir)
+                    .output();
             }
         }
 
