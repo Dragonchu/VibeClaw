@@ -193,11 +193,12 @@ impl VersionManager {
             return None;
         }
         let branch = String::from_utf8_lossy(&o.stdout).trim().to_string();
-        if branch.starts_with('V') && branch[1..].parse::<u32>().is_ok() {
-            Some(branch)
-        } else {
-            None
+        if let Some(num_str) = branch.strip_prefix('V') {
+            if !num_str.is_empty() && num_str.parse::<u32>().is_ok() {
+                return Some(branch);
+            }
         }
+        None
     }
 
     /// Return the rollback version (the version that was active before the
@@ -485,7 +486,7 @@ impl VersionManager {
 
     /// Delete old version branches, keeping at most `keep` beyond
     /// current and rollback.
-    pub fn cleanup_old_versions(&mut self, keep: usize) -> Result<Vec<String>, String> {
+    pub fn cleanup_old_versions(&self, keep: usize) -> Result<Vec<String>, String> {
         let current = self.current_version();
         let rollback = self.rollback_branch.clone();
         let mut all = self.list_versions();
