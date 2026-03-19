@@ -358,6 +358,12 @@ impl VersionManager {
                 .current_dir(src)
                 .output()
                 .map_err(|e| format!("git branch --show-current failed: {}", e))?;
+            if !out.status.success() {
+                return Err(format!(
+                    "git branch --show-current failed: {}",
+                    String::from_utf8_lossy(&out.stderr)
+                ));
+            }
             String::from_utf8_lossy(&out.stdout).trim().to_string()
         };
 
@@ -382,10 +388,19 @@ impl VersionManager {
             .map_err(|e| format!("git add failed: {}", e))?;
         if !add.status.success() {
             // Restore before returning error.
-            let _ = Command::new("git")
+            if let Ok(o) = Command::new("git")
                 .args(["checkout", &prev_branch])
                 .current_dir(src)
-                .output();
+                .output()
+            {
+                if !o.status.success() {
+                    tracing::warn!(
+                        branch = %prev_branch,
+                        "Failed to restore previous branch after git add failure: {}",
+                        String::from_utf8_lossy(&o.stderr)
+                    );
+                }
+            }
             return Err(format!(
                 "git add -A failed: {}",
                 String::from_utf8_lossy(&add.stderr)
@@ -399,10 +414,19 @@ impl VersionManager {
             .output()
             .map_err(|e| format!("git commit failed: {}", e))?;
         if !commit.status.success() {
-            let _ = Command::new("git")
+            if let Ok(o) = Command::new("git")
                 .args(["checkout", &prev_branch])
                 .current_dir(src)
-                .output();
+                .output()
+            {
+                if !o.status.success() {
+                    tracing::warn!(
+                        branch = %prev_branch,
+                        "Failed to restore previous branch after commit failure: {}",
+                        String::from_utf8_lossy(&o.stderr)
+                    );
+                }
+            }
             return Err(format!(
                 "git commit failed: {}",
                 String::from_utf8_lossy(&commit.stderr)
@@ -413,10 +437,19 @@ impl VersionManager {
 
         // Restore previous branch.
         if !prev_branch.is_empty() && prev_branch != version_info.version {
-            let _ = Command::new("git")
+            if let Ok(o) = Command::new("git")
                 .args(["checkout", &prev_branch])
                 .current_dir(src)
-                .output();
+                .output()
+            {
+                if !o.status.success() {
+                    tracing::warn!(
+                        branch = %prev_branch,
+                        "Failed to restore previous branch after commit: {}",
+                        String::from_utf8_lossy(&o.stderr)
+                    );
+                }
+            }
         }
 
         Ok(())
@@ -430,7 +463,7 @@ impl VersionManager {
     /// from `from`, also skipping `.git` and `target`.
     pub fn copy_source(&self, from: &Path, to: &Path) -> Result<(), String> {
         // Clean destination: remove everything except .git and target.
-        clean_dir_except(to, &["target"]).map_err(|e| {
+        clean_dir_except(to, &[".git", "target"]).map_err(|e| {
             format!(
                 "Failed to clean destination {}: {}",
                 to.display(),
@@ -705,7 +738,7 @@ impl VersionManager {
     }
 }
 
-/// Remove everything in `dir` except `.git` and the listed `keep` names.
+/// Remove everything in `dir` except the listed `keep` names.
 fn clean_dir_except(dir: &Path, keep: &[&str]) -> std::io::Result<()> {
     if !dir.exists() {
         return Ok(());
@@ -713,7 +746,8 @@ fn clean_dir_except(dir: &Path, keep: &[&str]) -> std::io::Result<()> {
     for entry in fs::read_dir(dir)? {
         let entry = entry?;
         let name = entry.file_name();
-        if name == ".git" || keep.contains(&name.to_str().unwrap_or("")) {
+        let name_lossy = name.to_string_lossy();
+        if keep.contains(&name_lossy.as_ref()) {
             continue;
         }
         let path = entry.path();
