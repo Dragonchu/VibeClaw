@@ -365,8 +365,8 @@ impl VersionManager {
     }
 
     /// Allocate a new version branch from the current HEAD **without**
-    /// switching to it.  The caller should then copy source into
-    /// `version_info.source_dir` and call `commit_version_source`.
+    /// switching to it.  The caller should then call
+    /// `commit_version_source` which handles checkout, copy, and commit.
     ///
     /// HEAD remains on the previously active branch so that
     /// `current_version()` continues to report the old version during
@@ -410,13 +410,18 @@ impl VersionManager {
         })
     }
 
-    /// Stage all files and commit on the given version branch.
+    /// Check out the target version branch, copy source files, stage,
+    /// commit, then restore the previously checked-out branch.
     ///
-    /// This temporarily checks out the target branch, commits, then
-    /// restores the previously checked-out branch so HEAD is not left
-    /// on the unverified version.
-    /// Non-fatal: callers should log a warning on error but continue.
-    pub fn commit_version_source(&self, version_info: &VersionInfo) -> Result<(), String> {
+    /// The checkout is performed **before** `copy_source` so that new
+    /// files (e.g. `Cargo.lock`) are written directly on the target
+    /// branch, avoiding "untracked working tree files would be
+    /// overwritten" errors from git.
+    pub fn commit_version_source(
+        &self,
+        version_info: &VersionInfo,
+        source_from: &Path,
+    ) -> Result<(), String> {
         let src = &version_info.source_dir;
 
         // Remember the current branch so we can return to it afterwards.
@@ -435,7 +440,7 @@ impl VersionManager {
             String::from_utf8_lossy(&out.stdout).trim().to_string()
         };
 
-        // Check out the target branch.
+        // 1. Check out the target branch FIRST — before any files are written.
         let co = Command::new("git")
             .args(["checkout", &version_info.version])
             .current_dir(src)
@@ -449,32 +454,28 @@ impl VersionManager {
             ));
         }
 
+        // 2. Copy source into the version branch working tree.
+        if let Err(e) = self.copy_source(source_from, src) {
+            // Restore before returning error.
+            Self::restore_branch(src, &prev_branch);
+            return Err(format!("Failed to copy source: {}", e));
+        }
+
+        // 3. Stage all changes.
         let add = Command::new("git")
             .args(["add", "-A"])
             .current_dir(src)
             .output()
             .map_err(|e| format!("git add failed: {}", e))?;
         if !add.status.success() {
-            // Restore before returning error.
-            if let Ok(o) = Command::new("git")
-                .args(["checkout", &prev_branch])
-                .current_dir(src)
-                .output()
-            {
-                if !o.status.success() {
-                    tracing::warn!(
-                        branch = %prev_branch,
-                        "Failed to restore previous branch after git add failure: {}",
-                        String::from_utf8_lossy(&o.stderr)
-                    );
-                }
-            }
+            Self::restore_branch(src, &prev_branch);
             return Err(format!(
                 "git add -A failed: {}",
                 String::from_utf8_lossy(&add.stderr)
             ));
         }
 
+        // 4. Commit.
         let msg = format!("Version {}", version_info.version);
         let commit = Command::new("git")
             .args(["commit", "--allow-empty", "-m", &msg])
@@ -482,19 +483,7 @@ impl VersionManager {
             .output()
             .map_err(|e| format!("git commit failed: {}", e))?;
         if !commit.status.success() {
-            if let Ok(o) = Command::new("git")
-                .args(["checkout", &prev_branch])
-                .current_dir(src)
-                .output()
-            {
-                if !o.status.success() {
-                    tracing::warn!(
-                        branch = %prev_branch,
-                        "Failed to restore previous branch after commit failure: {}",
-                        String::from_utf8_lossy(&o.stderr)
-                    );
-                }
-            }
+            Self::restore_branch(src, &prev_branch);
             return Err(format!(
                 "git commit failed: {}",
                 String::from_utf8_lossy(&commit.stderr)
@@ -503,24 +492,33 @@ impl VersionManager {
 
         tracing::info!(version = %version_info.version, "Source committed to git branch");
 
-        // Restore previous branch.
+        // 5. Restore previous branch so HEAD does not point to the
+        //    unverified version.
         if !prev_branch.is_empty() && prev_branch != version_info.version {
-            if let Ok(o) = Command::new("git")
-                .args(["checkout", &prev_branch])
-                .current_dir(src)
-                .output()
-            {
-                if !o.status.success() {
-                    tracing::warn!(
-                        branch = %prev_branch,
-                        "Failed to restore previous branch after commit: {}",
-                        String::from_utf8_lossy(&o.stderr)
-                    );
-                }
-            }
+            Self::restore_branch(src, &prev_branch);
         }
 
         Ok(())
+    }
+
+    /// Best-effort restore of the previously checked-out branch.
+    fn restore_branch(src: &Path, branch: &str) {
+        if branch.is_empty() {
+            return;
+        }
+        if let Ok(o) = Command::new("git")
+            .args(["checkout", branch])
+            .current_dir(src)
+            .output()
+        {
+            if !o.status.success() {
+                tracing::warn!(
+                    branch = %branch,
+                    "Failed to restore previous branch: {}",
+                    String::from_utf8_lossy(&o.stderr)
+                );
+            }
+        }
     }
 
     /// Copy source files from `from` into the source repo.
@@ -1219,11 +1217,63 @@ mod tests {
         let mgr = VersionManager::new(tmp.path());
 
         let info = mgr.allocate_version().expect("V1");
-        mgr.commit_version_source(&info).unwrap();
+
+        // Build a staging directory to feed into commit_version_source.
+        let staging = tmp.path().join("staging");
+        fs::create_dir_all(staging.join("src")).unwrap();
+        fs::write(staging.join("Cargo.toml"), b"[package]\nname=\"test\"\n").unwrap();
+        fs::write(staging.join("src").join("main.rs"), b"fn main() {}").unwrap();
+
+        mgr.commit_version_source(&info, &staging).unwrap();
 
         let detail = mgr.version_detail("V1").unwrap();
         assert_eq!(detail["version"], "V1");
         assert!(!detail["commit"].as_str().unwrap().is_empty());
+    }
+
+    /// Regression test: files present in the staging directory (e.g.
+    /// `Cargo.lock`) must not cause an "untracked working tree files
+    /// would be overwritten" error during `commit_version_source`,
+    /// because the checkout now happens **before** the copy.
+    #[test]
+    fn commit_version_source_with_new_files_does_not_conflict() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mgr = VersionManager::new(tmp.path());
+
+        let v1 = mgr.allocate_version().expect("V1");
+
+        // Build a staging dir that includes Cargo.lock (not tracked on main).
+        let staging = tmp.path().join("staging");
+        fs::create_dir_all(staging.join("src")).unwrap();
+        fs::write(staging.join("Cargo.toml"), b"[package]\nname=\"test\"\n").unwrap();
+        fs::write(staging.join("Cargo.lock"), b"# lock file\n").unwrap();
+        fs::write(staging.join("src").join("main.rs"), b"fn main() {}").unwrap();
+
+        // This used to fail because copy_source was called while still on
+        // main, leaving Cargo.lock as untracked, then git checkout V1
+        // refused to overwrite it.
+        mgr.commit_version_source(&v1, &staging)
+            .expect("commit_version_source must succeed even with new files");
+
+        // HEAD should be restored to main.
+        let out = Command::new("git")
+            .args(["branch", "--show-current"])
+            .current_dir(&v1.source_dir)
+            .output()
+            .unwrap();
+        let current = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        assert_eq!(current, "main", "HEAD must be restored to main");
+
+        // V1 branch must contain the committed Cargo.lock.
+        let show = Command::new("git")
+            .args(["show", "V1:Cargo.lock"])
+            .current_dir(&v1.source_dir)
+            .output()
+            .unwrap();
+        assert!(
+            show.status.success(),
+            "Cargo.lock must be committed on V1 branch"
+        );
     }
 
     #[test]
