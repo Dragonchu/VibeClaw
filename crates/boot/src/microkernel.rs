@@ -133,6 +133,7 @@ pub struct Microkernel {
     protocol_manager: ProtocolManager,
     hot_swap: HotSwapState,
     shutdown_requested: bool,
+    peripheral_child: Option<tokio::process::Child>,
 }
 
 impl Microkernel {
@@ -164,6 +165,7 @@ impl Microkernel {
             protocol_manager,
             hot_swap: HotSwapState::Idle,
             shutdown_requested: false,
+            peripheral_child: None,
         }
     }
 
@@ -387,20 +389,22 @@ impl Microkernel {
             tracing::info!(peer = %from, "Handshake complete");
 
             if from == "peripheral" {
-                if let HotSwapState::WaitingForNewHandshake { ref new_version, .. } = self.hot_swap {
-                    tracing::info!(
-                        version = %new_version,
-                        "New peripheral connected — hot swap complete"
-                    );
-                    let nv = new_version.clone();
-                    self.hot_swap = HotSwapState::Idle;
-                    self.send_audit(
-                        router,
-                        "hot_swap_complete",
-                        Some(&nv),
-                        serde_json::json!({}),
-                    )
-                    .await;
+                if matches!(self.hot_swap, HotSwapState::WaitingForNewHandshake { .. }) {
+                    let old_state = std::mem::replace(&mut self.hot_swap, HotSwapState::Idle);
+                    if let HotSwapState::WaitingForNewHandshake { new_version, child, .. } = old_state {
+                        tracing::info!(
+                            version = %new_version,
+                            "New peripheral connected — hot swap complete"
+                        );
+                        self.peripheral_child = child;
+                        self.send_audit(
+                            router,
+                            "hot_swap_complete",
+                            Some(&new_version),
+                            serde_json::json!({}),
+                        )
+                        .await;
+                    }
                 }
             }
         }
@@ -1270,6 +1274,8 @@ impl Microkernel {
             "Old peripheral disconnected — spawning new version"
         );
 
+        self.kill_peripheral_process().await;
+
         match self.spawn_peripheral(&new_binary, &new_version).await {
             Ok(child) => {
                 self.hot_swap = HotSwapState::WaitingForNewHandshake {
@@ -1326,12 +1332,28 @@ impl Microkernel {
         Ok(child)
     }
 
+    async fn kill_peripheral_process(&mut self) {
+        if let Some(ref mut child) = self.peripheral_child {
+            let pid = child.id();
+            tracing::info!(pid = ?pid, "Killing peripheral process");
+            if let Err(e) = child.kill().await {
+                tracing::warn!(pid = ?pid, "Failed to kill peripheral process: {}", e);
+            } else {
+                // Wait for the process to fully exit and release resources (e.g. bound ports)
+                let _ = child.wait().await;
+                tracing::info!(pid = ?pid, "Peripheral process killed");
+            }
+        }
+        self.peripheral_child = None;
+    }
+
     async fn check_hot_swap(&mut self, router: &std::sync::Arc<IpcRouter>) {
         match &self.hot_swap {
             HotSwapState::Idle => {}
             HotSwapState::WaitingForOldDisconnect { initiated_at, .. } => {
                 if initiated_at.elapsed() > Duration::from_secs(15) {
                     tracing::warn!("Old peripheral did not disconnect within timeout — forcing advance");
+                    self.kill_peripheral_process().await;
                     router.remove_peer("peripheral").await;
                     self.lease_manager.remove("peripheral");
                     self.advance_hot_swap_after_disconnect(router).await;
@@ -1351,7 +1373,12 @@ impl Microkernel {
                     let nv = new_version.clone();
                     let ov = old_version.clone();
 
-                    self.hot_swap = HotSwapState::Idle;
+                    // Extract and kill the child from WaitingForNewHandshake state
+                    let old_state = std::mem::replace(&mut self.hot_swap, HotSwapState::Idle);
+                    if let HotSwapState::WaitingForNewHandshake { child, .. } = old_state {
+                        self.peripheral_child = child;
+                    }
+                    self.kill_peripheral_process().await;
 
                     if let Err(e) = self.version_manager.rollback() {
                         tracing::error!("Rollback failed: {}", e);
@@ -1366,7 +1393,8 @@ impl Microkernel {
 
                         if rollback_binary.exists() {
                             match self.spawn_peripheral(&rollback_binary, &ov).await {
-                                Ok(_child) => {
+                                Ok(child) => {
+                                    self.peripheral_child = Some(child);
                                     tracing::info!(version = %ov, "Spawned rollback peripheral");
                                 }
                                 Err(e) => {
@@ -1559,6 +1587,7 @@ impl Microkernel {
         };
 
         router.broadcast(envelope).await;
+        self.kill_peripheral_process().await;
         self.shutdown_requested = true;
     }
 
