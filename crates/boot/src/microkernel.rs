@@ -2220,11 +2220,9 @@ impl Microkernel {
             }
         };
 
-        let categories = if req.event_filter.is_empty() {
-            vec!["compile".to_string(), "test".to_string(), "audit".to_string(), "runlevel".to_string()]
-        } else {
-            req.event_filter.clone()
-        };
+        // Store the filter exactly as provided.
+        // An empty list is treated as "all events" by broadcast_to_subscribers.
+        let categories = req.event_filter.clone();
 
         tracing::info!(peer = %from, categories = ?categories, "Event subscription registered");
         self.event_subscribers.insert(from.clone(), categories.clone());
@@ -2249,7 +2247,7 @@ impl Microkernel {
     /// Broadcast a typed event envelope to all subscribers that are interested in `category`.
     async fn broadcast_to_subscribers(&self, category: &str, msg_type: &str, payload: serde_json::Value, router: &RouterHandle) {
         for (peer, categories) in &self.event_subscribers {
-            if categories.contains(&category.to_string()) {
+            if categories.is_empty() || categories.iter().any(|c| c == category) {
                 let envelope = Envelope {
                     from: "boot".to_string(),
                     to: peer.clone(),

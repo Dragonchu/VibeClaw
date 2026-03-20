@@ -4,7 +4,7 @@
 //!   GET  /                    — dashboard SPA (inline HTML)
 //!   GET  /api/status          — system status
 //!   GET  /api/versions        — list all versions
-//!   GET  /api/versions/:ver   — version detail
+//!   GET  /api/versions/{ver}  — version detail
 //!   POST /api/rollback        — trigger rollback
 //!   GET  /api/peers           — lease / peer info
 //!   GET  /api/audit           — audit log query
@@ -56,64 +56,59 @@ async fn agent_redirect(State(state): State<Arc<AppState>>) -> impl IntoResponse
 }
 
 // ---------------------------------------------------------------------------
+// Helper — serialize a request payload or return HTTP 500
+// ---------------------------------------------------------------------------
+
+fn serialize_payload<T: serde::Serialize>(value: &T) -> Result<serde_json::Value, axum::response::Response> {
+    serde_json::to_value(value).map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Failed to serialize request: {}", e),
+        )
+            .into_response()
+    })
+}
+
+// ---------------------------------------------------------------------------
 // REST API handlers
 // ---------------------------------------------------------------------------
 
-async fn api_status(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+async fn api_status(State(state): State<Arc<AppState>>) -> axum::response::Response {
+    let payload = match serialize_payload(&messages::AdminStatusRequest {}) {
+        Ok(p) => p,
+        Err(r) => return r,
+    };
     let mut ipc = state.ipc.lock().await;
-    match ipc
-        .request(
-            msg_types::ADMIN_STATUS_REQUEST,
-            serde_json::to_value(&messages::AdminStatusRequest {}).unwrap_or_default(),
-        )
-        .await
-    {
+    match ipc.request(msg_types::ADMIN_STATUS_REQUEST, payload).await {
         Ok(resp) => axum::Json(resp.payload).into_response(),
-        Err(e) => (
-            StatusCode::SERVICE_UNAVAILABLE,
-            format!("IPC error: {}", e),
-        )
-            .into_response(),
+        Err(e) => (StatusCode::SERVICE_UNAVAILABLE, format!("IPC error: {}", e)).into_response(),
     }
 }
 
-async fn api_versions(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+async fn api_versions(State(state): State<Arc<AppState>>) -> axum::response::Response {
+    let payload = match serialize_payload(&messages::AdminListVersionsRequest {}) {
+        Ok(p) => p,
+        Err(r) => return r,
+    };
     let mut ipc = state.ipc.lock().await;
-    match ipc
-        .request(
-            msg_types::ADMIN_LIST_VERSIONS_REQUEST,
-            serde_json::to_value(&messages::AdminListVersionsRequest {}).unwrap_or_default(),
-        )
-        .await
-    {
+    match ipc.request(msg_types::ADMIN_LIST_VERSIONS_REQUEST, payload).await {
         Ok(resp) => axum::Json(resp.payload).into_response(),
-        Err(e) => (
-            StatusCode::SERVICE_UNAVAILABLE,
-            format!("IPC error: {}", e),
-        )
-            .into_response(),
+        Err(e) => (StatusCode::SERVICE_UNAVAILABLE, format!("IPC error: {}", e)).into_response(),
     }
 }
 
 async fn api_version_detail(
     State(state): State<Arc<AppState>>,
     Path(ver): Path<String>,
-) -> impl IntoResponse {
+) -> axum::response::Response {
+    let payload = match serialize_payload(&messages::AdminVersionDetailRequest { version: ver }) {
+        Ok(p) => p,
+        Err(r) => return r,
+    };
     let mut ipc = state.ipc.lock().await;
-    match ipc
-        .request(
-            msg_types::ADMIN_VERSION_DETAIL_REQUEST,
-            serde_json::to_value(&messages::AdminVersionDetailRequest { version: ver })
-                .unwrap_or_default(),
-        )
-        .await
-    {
+    match ipc.request(msg_types::ADMIN_VERSION_DETAIL_REQUEST, payload).await {
         Ok(resp) => axum::Json(resp.payload).into_response(),
-        Err(e) => (
-            StatusCode::SERVICE_UNAVAILABLE,
-            format!("IPC error: {}", e),
-        )
-            .into_response(),
+        Err(e) => (StatusCode::SERVICE_UNAVAILABLE, format!("IPC error: {}", e)).into_response(),
     }
 }
 
@@ -126,45 +121,30 @@ struct RollbackParams {
 async fn api_rollback(
     State(state): State<Arc<AppState>>,
     Query(params): Query<RollbackParams>,
-) -> impl IntoResponse {
+) -> axum::response::Response {
+    let payload = match serialize_payload(&messages::AdminForceRollbackRequest {
+        reason: params.reason.unwrap_or_else(|| "AdminWeb-initiated rollback".to_string()),
+        to_version: params.to,
+    }) {
+        Ok(p) => p,
+        Err(r) => return r,
+    };
     let mut ipc = state.ipc.lock().await;
-    match ipc
-        .request(
-            msg_types::ADMIN_FORCE_ROLLBACK_REQUEST,
-            serde_json::to_value(&messages::AdminForceRollbackRequest {
-                reason: params
-                    .reason
-                    .unwrap_or_else(|| "AdminWeb-initiated rollback".to_string()),
-                to_version: params.to,
-            })
-            .unwrap_or_default(),
-        )
-        .await
-    {
+    match ipc.request(msg_types::ADMIN_FORCE_ROLLBACK_REQUEST, payload).await {
         Ok(resp) => axum::Json(resp.payload).into_response(),
-        Err(e) => (
-            StatusCode::SERVICE_UNAVAILABLE,
-            format!("IPC error: {}", e),
-        )
-            .into_response(),
+        Err(e) => (StatusCode::SERVICE_UNAVAILABLE, format!("IPC error: {}", e)).into_response(),
     }
 }
 
-async fn api_peers(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+async fn api_peers(State(state): State<Arc<AppState>>) -> axum::response::Response {
+    let payload = match serialize_payload(&messages::AdminLeaseStatusRequest {}) {
+        Ok(p) => p,
+        Err(r) => return r,
+    };
     let mut ipc = state.ipc.lock().await;
-    match ipc
-        .request(
-            msg_types::ADMIN_LEASE_STATUS_REQUEST,
-            serde_json::to_value(&messages::AdminLeaseStatusRequest {}).unwrap_or_default(),
-        )
-        .await
-    {
+    match ipc.request(msg_types::ADMIN_LEASE_STATUS_REQUEST, payload).await {
         Ok(resp) => axum::Json(resp.payload).into_response(),
-        Err(e) => (
-            StatusCode::SERVICE_UNAVAILABLE,
-            format!("IPC error: {}", e),
-        )
-            .into_response(),
+        Err(e) => (StatusCode::SERVICE_UNAVAILABLE, format!("IPC error: {}", e)).into_response(),
     }
 }
 
@@ -177,25 +157,18 @@ struct AuditParams {
 async fn api_audit(
     State(state): State<Arc<AppState>>,
     Query(params): Query<AuditParams>,
-) -> impl IntoResponse {
+) -> axum::response::Response {
+    let payload = match serialize_payload(&messages::AdminAuditQueryRequest {
+        event_filter: params.event,
+        limit: params.limit,
+    }) {
+        Ok(p) => p,
+        Err(r) => return r,
+    };
     let mut ipc = state.ipc.lock().await;
-    match ipc
-        .request(
-            msg_types::ADMIN_AUDIT_QUERY_REQUEST,
-            serde_json::to_value(&messages::AdminAuditQueryRequest {
-                event_filter: params.event,
-                limit: params.limit,
-            })
-            .unwrap_or_default(),
-        )
-        .await
-    {
+    match ipc.request(msg_types::ADMIN_AUDIT_QUERY_REQUEST, payload).await {
         Ok(resp) => axum::Json(resp.payload).into_response(),
-        Err(e) => (
-            StatusCode::SERVICE_UNAVAILABLE,
-            format!("IPC error: {}", e),
-        )
-            .into_response(),
+        Err(e) => (StatusCode::SERVICE_UNAVAILABLE, format!("IPC error: {}", e)).into_response(),
     }
 }
 
@@ -208,27 +181,18 @@ struct RunlevelParams {
 async fn api_runlevel(
     State(state): State<Arc<AppState>>,
     Query(params): Query<RunlevelParams>,
-) -> impl IntoResponse {
+) -> axum::response::Response {
+    let payload = match serialize_payload(&messages::RunlevelRequest {
+        to: params.level,
+        reason: params.reason.unwrap_or_else(|| "AdminWeb runlevel change".to_string()),
+    }) {
+        Ok(p) => p,
+        Err(r) => return r,
+    };
     let mut ipc = state.ipc.lock().await;
-    match ipc
-        .request(
-            msg_types::RUNLEVEL_REQUEST,
-            serde_json::to_value(&messages::RunlevelRequest {
-                to: params.level,
-                reason: params
-                    .reason
-                    .unwrap_or_else(|| "AdminWeb runlevel change".to_string()),
-            })
-            .unwrap_or_default(),
-        )
-        .await
-    {
+    match ipc.request(msg_types::RUNLEVEL_REQUEST, payload).await {
         Ok(resp) => axum::Json(resp.payload).into_response(),
-        Err(e) => (
-            StatusCode::SERVICE_UNAVAILABLE,
-            format!("IPC error: {}", e),
-        )
-            .into_response(),
+        Err(e) => (StatusCode::SERVICE_UNAVAILABLE, format!("IPC error: {}", e)).into_response(),
     }
 }
 
@@ -240,26 +204,17 @@ struct ShutdownParams {
 async fn api_shutdown(
     State(state): State<Arc<AppState>>,
     Query(params): Query<ShutdownParams>,
-) -> impl IntoResponse {
+) -> axum::response::Response {
+    let payload = match serialize_payload(&messages::AdminShutdownRequest {
+        reason: params.reason.unwrap_or_else(|| "AdminWeb-initiated shutdown".to_string()),
+    }) {
+        Ok(p) => p,
+        Err(r) => return r,
+    };
     let mut ipc = state.ipc.lock().await;
-    match ipc
-        .request(
-            msg_types::ADMIN_SHUTDOWN_REQUEST,
-            serde_json::to_value(&messages::AdminShutdownRequest {
-                reason: params
-                    .reason
-                    .unwrap_or_else(|| "AdminWeb-initiated shutdown".to_string()),
-            })
-            .unwrap_or_default(),
-        )
-        .await
-    {
+    match ipc.request(msg_types::ADMIN_SHUTDOWN_REQUEST, payload).await {
         Ok(resp) => axum::Json(resp.payload).into_response(),
-        Err(e) => (
-            StatusCode::SERVICE_UNAVAILABLE,
-            format!("IPC error: {}", e),
-        )
-            .into_response(),
+        Err(e) => (StatusCode::SERVICE_UNAVAILABLE, format!("IPC error: {}", e)).into_response(),
     }
 }
 
@@ -278,7 +233,7 @@ async fn events_sse(State(state): State<Arc<AppState>>) -> impl IntoResponse {
         let stream_ipc = match AdminWebIpc::connect(&sock_path).await {
             Ok(c) => c,
             Err(e) => {
-                let msg = format!("{{\"error\":\"{}\"}}", e);
+                let msg = serde_json::json!({"error": e.to_string()}).to_string();
                 let _ = tx.send(Ok(Event::default().event("error").data(msg))).await;
                 return;
             }
@@ -287,7 +242,7 @@ async fn events_sse(State(state): State<Arc<AppState>>) -> impl IntoResponse {
         let mut event_rx = match stream_ipc.subscribe_events(vec![]).await {
             Ok(r) => r,
             Err(e) => {
-                let msg = format!("{{\"error\":\"{}\"}}", e);
+                let msg = serde_json::json!({"error": e.to_string()}).to_string();
                 let _ = tx.send(Ok(Event::default().event("error").data(msg))).await;
                 return;
             }

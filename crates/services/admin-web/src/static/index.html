@@ -197,11 +197,47 @@ async function loadVersions() {
     body.innerHTML = '';
     for (const v of (d.versions || [])) {
       const tr = document.createElement('tr');
-      let badges = '';
-      if (v.is_current) badges += '<span class="badge badge-green">current</span> ';
-      if (v.is_rollback) badges += '<span class="badge badge-yellow">rollback</span>';
-      tr.innerHTML = `<td>${v.version}</td><td>${badges || '<span class="badge badge-gray">old</span>'}</td>
-        <td><button class="secondary" onclick="rollbackTo('${v.version}')">Rollback to</button></td>`;
+
+      // Version cell — textContent avoids XSS
+      const versionTd = document.createElement('td');
+      versionTd.textContent = v.version;
+      tr.appendChild(versionTd);
+
+      // Badges cell
+      const badgesTd = document.createElement('td');
+      let hasBadge = false;
+      if (v.is_current) {
+        const b = document.createElement('span');
+        b.className = 'badge badge-green';
+        b.textContent = 'current';
+        badgesTd.appendChild(b);
+        hasBadge = true;
+      }
+      if (v.is_rollback) {
+        if (hasBadge) badgesTd.appendChild(document.createTextNode(' '));
+        const b = document.createElement('span');
+        b.className = 'badge badge-yellow';
+        b.textContent = 'rollback';
+        badgesTd.appendChild(b);
+        hasBadge = true;
+      }
+      if (!hasBadge) {
+        const b = document.createElement('span');
+        b.className = 'badge badge-gray';
+        b.textContent = 'old';
+        badgesTd.appendChild(b);
+      }
+      tr.appendChild(badgesTd);
+
+      // Action cell
+      const actionTd = document.createElement('td');
+      const btn = document.createElement('button');
+      btn.className = 'secondary';
+      btn.textContent = 'Rollback to';
+      btn.addEventListener('click', () => rollbackTo(v.version));
+      actionTd.appendChild(btn);
+      tr.appendChild(actionTd);
+
       body.appendChild(tr);
     }
   } catch(e) { toast('Failed to load versions: ' + e, true); }
@@ -230,11 +266,37 @@ async function loadPeers() {
     for (const p of (d.leases || [])) {
       const h = p.last_health;
       const tr = document.createElement('tr');
-      tr.innerHTML = `<td>${p.identity}</td>
-        <td><span class="badge ${p.status === 'Alive' ? 'badge-green' : 'badge-red'}">${p.status}</span></td>
-        <td>${p.probation ? '<span class="badge badge-yellow">Yes</span>' : '—'}</td>
-        <td>${h ? h.cpu_percent.toFixed(1) : '—'}</td>
-        <td>${h ? (h.memory_bytes / BYTES_PER_MB).toFixed(1) : '—'}</td>`;
+
+      const identityTd = document.createElement('td');
+      identityTd.textContent = p.identity != null ? String(p.identity) : '';
+      tr.appendChild(identityTd);
+
+      const statusTd = document.createElement('td');
+      const statusSpan = document.createElement('span');
+      statusSpan.className = 'badge ' + (p.status === 'Alive' ? 'badge-green' : 'badge-red');
+      statusSpan.textContent = p.status != null ? String(p.status) : '';
+      statusTd.appendChild(statusSpan);
+      tr.appendChild(statusTd);
+
+      const probationTd = document.createElement('td');
+      if (p.probation) {
+        const b = document.createElement('span');
+        b.className = 'badge badge-yellow';
+        b.textContent = 'Yes';
+        probationTd.appendChild(b);
+      } else {
+        probationTd.textContent = '—';
+      }
+      tr.appendChild(probationTd);
+
+      const cpuTd = document.createElement('td');
+      cpuTd.textContent = h && typeof h.cpu_percent === 'number' ? h.cpu_percent.toFixed(1) : '—';
+      tr.appendChild(cpuTd);
+
+      const memTd = document.createElement('td');
+      memTd.textContent = h && typeof h.memory_bytes === 'number' ? (h.memory_bytes / BYTES_PER_MB).toFixed(1) : '—';
+      tr.appendChild(memTd);
+
       body.appendChild(tr);
     }
   } catch(e) { toast('Failed to load peers: ' + e, true); }
@@ -267,13 +329,42 @@ async function loadAudit() {
     const d = await r.json();
     const body = document.getElementById('audit-body');
     body.innerHTML = '';
-    if (d.error) { body.innerHTML = `<tr><td colspan=4 style="color:#f85149">${d.error}</td></tr>`; return; }
+    if (d.error) {
+      const tr = document.createElement('tr');
+      const td = document.createElement('td');
+      td.colSpan = 4;
+      td.style.color = '#f85149';
+      td.textContent = d.error;
+      tr.appendChild(td);
+      body.appendChild(tr);
+      return;
+    }
     for (const e of (d.entries || [])) {
       const tr = document.createElement('tr');
-      tr.innerHTML = `<td style="white-space:nowrap">${e.timestamp}</td>
-        <td><span class="badge badge-blue">${e.event}</span></td>
-        <td>${e.version || '—'}</td>
-        <td style="font-size:0.75rem;color:#8b949e">${JSON.stringify(e.details)}</td>`;
+
+      const tsTd = document.createElement('td');
+      tsTd.style.whiteSpace = 'nowrap';
+      tsTd.textContent = e.timestamp;
+      tr.appendChild(tsTd);
+
+      const eventTd = document.createElement('td');
+      const badge = document.createElement('span');
+      badge.className = 'badge badge-blue';
+      badge.textContent = e.event;
+      eventTd.appendChild(badge);
+      tr.appendChild(eventTd);
+
+      const versionTd = document.createElement('td');
+      versionTd.textContent = e.version || '—';
+      tr.appendChild(versionTd);
+
+      const detailsTd = document.createElement('td');
+      detailsTd.style.fontSize = '0.75rem';
+      detailsTd.style.color = '#8b949e';
+      // Use textContent to safely display arbitrary detail strings
+      detailsTd.textContent = JSON.stringify(e.details);
+      tr.appendChild(detailsTd);
+
       body.appendChild(tr);
     }
   } catch(e) { toast('Failed to load audit: ' + e, true); }
@@ -289,7 +380,26 @@ function appendEvent(type, data) {
   const entry = document.createElement('div');
   entry.className = 'entry';
   const ts = new Date().toLocaleTimeString();
-  entry.innerHTML = `<span class="ts">${ts}</span><span class="type">${type}</span>${JSON.stringify(data)}`;
+
+  const tsSpan = document.createElement('span');
+  tsSpan.className = 'ts';
+  tsSpan.textContent = ts;
+
+  const typeSpan = document.createElement('span');
+  typeSpan.className = 'type';
+  typeSpan.textContent = type;
+
+  const dataSpan = document.createElement('span');
+  try {
+    dataSpan.textContent = typeof data === 'string' ? data : JSON.stringify(data);
+  } catch (_) {
+    dataSpan.textContent = String(data);
+  }
+
+  entry.appendChild(tsSpan);
+  entry.appendChild(typeSpan);
+  entry.appendChild(dataSpan);
+
   log.appendChild(entry);
   log.scrollTop = log.scrollHeight;
   // Keep last 100 entries
