@@ -11,7 +11,7 @@ use tokio::net::UnixStream;
 use tokio::process::Command;
 
 use reloopy_ipc::messages::{
-    CompileRequest, CompileResult, Envelope, Hello, HealthReport, LeaseRenew, Welcome, msg_types,
+    CompileRequest, CompileResult, Envelope, HealthReport, Hello, LeaseRenew, Welcome, msg_types,
 };
 use reloopy_ipc::wire;
 use tracing::{error, info, warn};
@@ -194,7 +194,10 @@ async fn handle_compile_request(envelope: &Envelope) -> CompileResult {
             version: request.version,
             success: false,
             binary_path: None,
-            errors: Some(format!("Source path does not exist: {}", request.source_path)),
+            errors: Some(format!(
+                "Source path does not exist: {}",
+                request.source_path
+            )),
         };
     }
 

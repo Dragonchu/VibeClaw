@@ -1,9 +1,7 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use reloopy_ipc::messages::{
-    Envelope, Hello, LeaseRenew, Welcome, msg_types, InvariantResult,
-};
+use reloopy_ipc::messages::{Envelope, Hello, InvariantResult, LeaseRenew, Welcome, msg_types};
 use reloopy_ipc::wire;
 use serde::Deserialize;
 use tokio::net::{UnixListener, UnixStream};
@@ -86,7 +84,10 @@ impl InvariantRunner {
         }
     }
 
-    async fn spawn_candidate(&self, binary_path: &str) -> Result<(Child, UnixStream, PathBuf), String> {
+    async fn spawn_candidate(
+        &self,
+        binary_path: &str,
+    ) -> Result<(Child, UnixStream, PathBuf), String> {
         let temp_dir = std::env::temp_dir().join(format!("reloopy-judge-{}", std::process::id()));
         std::fs::create_dir_all(&temp_dir)
             .map_err(|e| format!("Failed to create temp dir: {}", e))?;
@@ -199,25 +200,21 @@ impl InvariantRunner {
                 .await
                 .map_err(|e| format!("Failed to send Echo: {}", e))?;
 
-            let response = tokio::time::timeout(
-                Duration::from_secs(3),
-                wire::read_envelope(&mut reader),
-            )
-            .await
-            .map_err(|_| "Echo response timed out".to_string())?
-            .map_err(|e| format!("Failed to read Echo response: {}", e))?;
+            let response =
+                tokio::time::timeout(Duration::from_secs(3), wire::read_envelope(&mut reader))
+                    .await
+                    .map_err(|_| "Echo response timed out".to_string())?
+                    .map_err(|e| format!("Failed to read Echo response: {}", e))?;
 
             if response.msg_type == "EchoResponse" && response.payload == echo_payload {
                 Ok(())
             } else if response.msg_type == msg_types::LEASE_RENEW {
                 // Heartbeat came first — read next message
-                let response = tokio::time::timeout(
-                    Duration::from_secs(3),
-                    wire::read_envelope(&mut reader),
-                )
-                .await
-                .map_err(|_| "Echo response timed out (after heartbeat)".to_string())?
-                .map_err(|e| format!("Failed to read Echo response: {}", e))?;
+                let response =
+                    tokio::time::timeout(Duration::from_secs(3), wire::read_envelope(&mut reader))
+                        .await
+                        .map_err(|_| "Echo response timed out (after heartbeat)".to_string())?
+                        .map_err(|e| format!("Failed to read Echo response: {}", e))?;
 
                 if response.msg_type == "EchoResponse" && response.payload == echo_payload {
                     Ok(())
@@ -268,10 +265,11 @@ impl InvariantRunner {
                 .map_err(|e| format!("Failed to send Welcome: {}", e))?;
 
             let heartbeat_timeout = Duration::from_secs(12);
-            let envelope = tokio::time::timeout(heartbeat_timeout, wire::read_envelope(&mut reader))
-                .await
-                .map_err(|_| "No heartbeat received within 12s".to_string())?
-                .map_err(|e| format!("Failed to read heartbeat: {}", e))?;
+            let envelope =
+                tokio::time::timeout(heartbeat_timeout, wire::read_envelope(&mut reader))
+                    .await
+                    .map_err(|_| "No heartbeat received within 12s".to_string())?
+                    .map_err(|e| format!("Failed to read heartbeat: {}", e))?;
 
             if envelope.msg_type != msg_types::LEASE_RENEW {
                 return Err(format!("Expected LeaseRenew, got: {}", envelope.msg_type));

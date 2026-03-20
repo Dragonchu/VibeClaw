@@ -197,9 +197,8 @@ impl Microkernel {
             tokio::time::interval(Duration::from_secs(RESOURCE_CHECK_INTERVAL_SECS));
         let mut hot_swap_tick = tokio::time::interval(Duration::from_secs(2));
 
-        let mut sigterm = tokio::signal::unix::signal(
-            tokio::signal::unix::SignalKind::terminate(),
-        )?;
+        let mut sigterm =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
 
         loop {
             tokio::select! {
@@ -239,7 +238,10 @@ impl Microkernel {
                 break;
             }
             if tokio::time::Instant::now() >= deadline {
-                tracing::warn!("Grace period expired, {} peer(s) still connected", peers.len());
+                tracing::warn!(
+                    "Grace period expired, {} peer(s) still connected",
+                    peers.len()
+                );
                 break;
             }
             tokio::time::sleep(Duration::from_millis(200)).await;
@@ -387,7 +389,10 @@ impl Microkernel {
             if from == "peripheral" {
                 if matches!(self.hot_swap, HotSwapState::WaitingForNewHandshake { .. }) {
                     let old_state = std::mem::replace(&mut self.hot_swap, HotSwapState::Idle);
-                    if let HotSwapState::WaitingForNewHandshake { new_version, child, .. } = old_state {
+                    if let HotSwapState::WaitingForNewHandshake {
+                        new_version, child, ..
+                    } = old_state
+                    {
                         tracing::info!(
                             version = %new_version,
                             "New peripheral connected — hot swap complete"
@@ -481,11 +486,7 @@ impl Microkernel {
         }
     }
 
-    async fn handle_submit_update(
-        &mut self,
-        envelope: Envelope,
-        router: &RouterHandle,
-    ) {
+    async fn handle_submit_update(&mut self, envelope: Envelope, router: &RouterHandle) {
         let from = envelope.from.clone();
 
         let submit: messages::SubmitUpdate = match serde_json::from_value(envelope.payload.clone())
@@ -625,11 +626,7 @@ impl Microkernel {
         }
     }
 
-    async fn handle_compile_result(
-        &mut self,
-        envelope: Envelope,
-        router: &RouterHandle,
-    ) {
+    async fn handle_compile_result(&mut self, envelope: Envelope, router: &RouterHandle) {
         let result: messages::CompileResult = match serde_json::from_value(envelope.payload.clone())
         {
             Ok(r) => r,
@@ -688,7 +685,11 @@ impl Microkernel {
         // Build worktree is no longer needed after binary extraction.
         self.version_manager.cleanup_worktree(&result.version);
 
-        let binary_path = self.version_manager.binary_path().to_string_lossy().to_string();
+        let binary_path = self
+            .version_manager
+            .binary_path()
+            .to_string_lossy()
+            .to_string();
 
         let test_req = messages::TestRequest {
             version: result.version.clone(),
@@ -1233,18 +1234,19 @@ impl Microkernel {
     }
 
     async fn advance_hot_swap_after_disconnect(&mut self, router: &RouterHandle) {
-        let (new_version, new_binary, old_version) = match std::mem::replace(&mut self.hot_swap, HotSwapState::Idle) {
-            HotSwapState::WaitingForOldDisconnect {
-                new_version,
-                new_binary,
-                old_version,
-                ..
-            } => (new_version, new_binary, old_version),
-            other => {
-                self.hot_swap = other;
-                return;
-            }
-        };
+        let (new_version, new_binary, old_version) =
+            match std::mem::replace(&mut self.hot_swap, HotSwapState::Idle) {
+                HotSwapState::WaitingForOldDisconnect {
+                    new_version,
+                    new_binary,
+                    old_version,
+                    ..
+                } => (new_version, new_binary, old_version),
+                other => {
+                    self.hot_swap = other;
+                    return;
+                }
+            };
 
         tracing::info!(
             new_version = %new_version,
@@ -1325,7 +1327,9 @@ impl Microkernel {
             HotSwapState::Idle => {}
             HotSwapState::WaitingForOldDisconnect { initiated_at, .. } => {
                 if initiated_at.elapsed() > Duration::from_secs(15) {
-                    tracing::warn!("Old peripheral did not disconnect within timeout — forcing advance");
+                    tracing::warn!(
+                        "Old peripheral did not disconnect within timeout — forcing advance"
+                    );
                     self.kill_peripheral_process().await;
                     router.remove_peer("peripheral").await;
                     self.lease_manager.remove("peripheral");
@@ -1386,11 +1390,7 @@ impl Microkernel {
         }
     }
 
-    async fn handle_runlevel_request(
-        &mut self,
-        envelope: Envelope,
-        router: &RouterHandle,
-    ) {
+    async fn handle_runlevel_request(&mut self, envelope: Envelope, router: &RouterHandle) {
         let from = envelope.from.clone();
 
         let request: messages::RunlevelRequest =
@@ -1559,11 +1559,7 @@ impl Microkernel {
         self.shutdown_requested = true;
     }
 
-    async fn handle_admin_shutdown(
-        &mut self,
-        envelope: Envelope,
-        router: &RouterHandle,
-    ) {
+    async fn handle_admin_shutdown(&mut self, envelope: Envelope, router: &RouterHandle) {
         let from = envelope.from.clone();
         tracing::warn!(requested_by = %from, "Admin shutdown requested");
 
@@ -1601,11 +1597,7 @@ impl Microkernel {
         }
     }
 
-    async fn handle_constitution_amendment(
-        &mut self,
-        envelope: Envelope,
-        router: &RouterHandle,
-    ) {
+    async fn handle_constitution_amendment(&mut self, envelope: Envelope, router: &RouterHandle) {
         let from = envelope.from.clone();
 
         let proposal: messages::ConstitutionAmendmentProposal =
@@ -1678,11 +1670,7 @@ impl Microkernel {
         .await;
     }
 
-    async fn handle_protocol_extension(
-        &mut self,
-        envelope: Envelope,
-        router: &RouterHandle,
-    ) {
+    async fn handle_protocol_extension(&mut self, envelope: Envelope, router: &RouterHandle) {
         let from = envelope.from.clone();
 
         let proposal: messages::ProtocolExtensionProposal =
@@ -1786,11 +1774,7 @@ impl Microkernel {
         }
     }
 
-    async fn handle_admin_list_versions(
-        &self,
-        envelope: Envelope,
-        router: &RouterHandle,
-    ) {
+    async fn handle_admin_list_versions(&self, envelope: Envelope, router: &RouterHandle) {
         let from = envelope.from.clone();
         let current = self.version_manager.current_version();
         let rollback = self.version_manager.rollback_version();
@@ -1819,11 +1803,7 @@ impl Microkernel {
         }
     }
 
-    async fn handle_admin_version_detail(
-        &self,
-        envelope: Envelope,
-        router: &RouterHandle,
-    ) {
+    async fn handle_admin_version_detail(&self, envelope: Envelope, router: &RouterHandle) {
         let from = envelope.from.clone();
         let req: messages::AdminVersionDetailRequest =
             match serde_json::from_value(envelope.payload.clone()) {
@@ -1860,11 +1840,7 @@ impl Microkernel {
         }
     }
 
-    async fn handle_admin_cleanup_versions(
-        &mut self,
-        envelope: Envelope,
-        router: &RouterHandle,
-    ) {
+    async fn handle_admin_cleanup_versions(&mut self, envelope: Envelope, router: &RouterHandle) {
         let from = envelope.from.clone();
         let req: messages::AdminCleanupVersionsRequest =
             match serde_json::from_value(envelope.payload.clone()) {
@@ -1893,11 +1869,7 @@ impl Microkernel {
         }
     }
 
-    async fn handle_admin_force_rollback(
-        &mut self,
-        envelope: Envelope,
-        router: &RouterHandle,
-    ) {
+    async fn handle_admin_force_rollback(&mut self, envelope: Envelope, router: &RouterHandle) {
         let from = envelope.from.clone();
         let req: messages::AdminForceRollbackRequest =
             match serde_json::from_value(envelope.payload.clone()) {
@@ -1911,7 +1883,9 @@ impl Microkernel {
         tracing::warn!(requested_by = %from, reason = %req.reason, "Admin-initiated rollback");
 
         let result = if let Some(target) = &req.to_version {
-            self.version_manager.switch_to(target).map(|_| target.clone())
+            self.version_manager
+                .switch_to(target)
+                .map(|_| target.clone())
         } else {
             self.version_manager.rollback()
         };
@@ -1950,11 +1924,7 @@ impl Microkernel {
         }
     }
 
-    async fn handle_admin_lease_status(
-        &self,
-        envelope: Envelope,
-        router: &RouterHandle,
-    ) {
+    async fn handle_admin_lease_status(&self, envelope: Envelope, router: &RouterHandle) {
         let from = envelope.from.clone();
 
         let leases: Vec<messages::PeerLeaseInfo> = self
@@ -1982,11 +1952,7 @@ impl Microkernel {
         }
     }
 
-    async fn handle_admin_unlock_version(
-        &mut self,
-        envelope: Envelope,
-        router: &RouterHandle,
-    ) {
+    async fn handle_admin_unlock_version(&mut self, envelope: Envelope, router: &RouterHandle) {
         let from = envelope.from.clone();
         let was_locked = self.version_manager.unlock();
 
@@ -2014,11 +1980,7 @@ impl Microkernel {
         }
     }
 
-    async fn handle_admin_audit_query(
-        &self,
-        envelope: Envelope,
-        router: &RouterHandle,
-    ) {
+    async fn handle_admin_audit_query(&self, envelope: Envelope, router: &RouterHandle) {
         let from = envelope.from.clone();
 
         let resp = messages::AdminAuditQueryResponse {

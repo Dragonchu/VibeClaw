@@ -80,11 +80,7 @@ impl std::fmt::Display for EscalationViolation {
                 write!(f, "New IPC endpoints: {:?}", eps)
             }
             Self::ChildProcessEscalation { old, new } => {
-                write!(
-                    f,
-                    "Child process limit escalation: {} -> {}",
-                    old, new
-                )
+                write!(f, "Child process limit escalation: {} -> {}", old, new)
             }
         }
     }
@@ -203,8 +199,7 @@ fn detect_escalations(old: &Capabilities, new: &Capabilities) -> Vec<EscalationV
     }
 
     if new.network.allowed && old.network.allowed {
-        let old_hosts: HashSet<&str> =
-            old.network.whitelist.iter().map(|s| s.as_str()).collect();
+        let old_hosts: HashSet<&str> = old.network.whitelist.iter().map(|s| s.as_str()).collect();
         let new_hosts: Vec<String> = new
             .network
             .whitelist

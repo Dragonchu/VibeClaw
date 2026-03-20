@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::net::UnixStream;
 use tokio::sync::mpsc;
 
-use reloopy_ipc::messages::{Envelope, Hello, HealthReport, LeaseRenew, Welcome, msg_types};
+use reloopy_ipc::messages::{Envelope, HealthReport, Hello, LeaseRenew, Welcome, msg_types};
 use reloopy_ipc::wire;
 
 const IDENTITY: &str = "peripheral";
@@ -12,7 +12,11 @@ const IDENTITY: &str = "peripheral";
 static MSG_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 pub fn new_msg_id() -> String {
-    format!("{}-{}", IDENTITY, MSG_COUNTER.fetch_add(1, Ordering::Relaxed))
+    format!(
+        "{}-{}",
+        IDENTITY,
+        MSG_COUNTER.fetch_add(1, Ordering::Relaxed)
+    )
 }
 
 pub struct IpcHandle {
@@ -45,11 +49,7 @@ pub async fn connect_and_handshake(
 
     let welcome_envelope = wire::read_envelope(&mut reader).await?;
     if welcome_envelope.msg_type != msg_types::WELCOME {
-        return Err(format!(
-            "Expected Welcome, got: {}",
-            welcome_envelope.msg_type
-        )
-        .into());
+        return Err(format!("Expected Welcome, got: {}", welcome_envelope.msg_type).into());
     }
 
     let welcome: Welcome = serde_json::from_value(welcome_envelope.payload)?;

@@ -17,6 +17,8 @@ reqwest = { workspace = true }
 axum = { workspace = true }
 tokio-stream = { workspace = true }
 reloopy-ipc = { workspace = true }
+ignore = "0.4"
+similar = "2"
 
 [dev-dependencies]
 tempfile = "3"

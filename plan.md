@@ -529,3 +529,17 @@ reloopy/                          ← workspace root
   - [x] 实现 Agent Tool 系统（read_source_file, list_source_files, write_source_file, submit_update）
   - [x] 实现源码管理与最小 workspace 打包
   - [x] 实现 Boot 热替换流程（Shutdown → Spawn → Handshake → Rollback）
+
+---
+
+## 当前任务计划（Agent 源码工具改进）
+
+- [x] 为 Peripheral 增加依赖（如 `ignore` 等），支持忽略规则搜索。
+- [x] 扩展 source 读/写工具：支持按行范围读取、精确编辑与定位。
+- [x] 增强搜索工具，使用 ignore crate 处理 `.gitignore`/默认忽略。
+- [x] 调整 `agent.rs` 系统提示的截断策略，避免关键上下文丢失。
+
+### 验证
+- [ ] `cargo fmt`
+- [ ] `cargo clippy -p peripheral --all-targets`
+- [ ] `cargo test -p peripheral --all-targets`

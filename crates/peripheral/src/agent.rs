@@ -8,14 +8,15 @@ use crate::memory::MemoryManager;
 use crate::source::SourceManager;
 use crate::tools::{self, ToolResult};
 
-use reloopy_ipc::messages::{msg_types, Envelope};
+use reloopy_ipc::messages::{Envelope, msg_types};
 
 const BASE_SYSTEM_PROMPT: &str = r#"You are Reloopy, a self-evolving AI agent written in Rust. You can read and modify your own source code to improve yourself.
 
 ## Source Code Tools
-- read_source_file(path): Read a file from your source code. Path is relative to the peripheral crate root (e.g. "src/main.rs", "Cargo.toml")
-- list_source_files(path): List files in your source directory. Path is relative to the peripheral crate root (e.g. "src/", ".")
-- write_source_file(path, content): Write changes directly to a file in your working directory. Path is relative to crates/peripheral/ (e.g. "src/main.rs"). Provide the FULL file content.
+ - read_source_file(path, start_line?, end_line?): Read a file or a 1-based inclusive line range. Paths are relative to the peripheral crate root (e.g. "src/main.rs", "Cargo.toml").
+- search_source_files(query, path?="."): Search source files using a .gitignore-aware walker. Returns "path:line: snippet" matches.
+- list_source_files(path): List files in your source directory. Path is relative to the peripheral crate root (e.g. "src/", ".").
+- write_source_file(path, content, start_line?, end_line?): Write changes directly to a file in your working directory. Provide the replacement text for the targeted range or entire file. Use line ranges for precise edits or set start_line=end_line=current_line_count+1 to append.
 - submit_update(): Submit the current working directory for compilation and deployment. This tool returns the build/test result. If compilation fails, read the error messages, fix the code with write_source_file, and call submit_update() again.
 
 ## Memory Tools
@@ -27,6 +28,8 @@ const BASE_SYSTEM_PROMPT: &str = r#"You are Reloopy, a self-evolving AI agent wr
 
 ## Guidelines
 - Always read the relevant source files before making changes
+ - Use search_source_files and line ranges to keep context focused
+- Tool outputs in the UI are truncated for previews; keep requests concise and rely on targeted reads/diffs
 - Ensure your changes produce valid, compilable Rust code
 - Maintain IPC protocol compatibility (handshake, heartbeat, message handling)
 - Make focused, incremental changes
@@ -198,12 +201,7 @@ impl Agent {
             return "Error: Lost connection to Boot".to_string();
         }
 
-        match tokio::time::timeout(
-            Duration::from_secs(300),
-            self.update_result_rx.recv(),
-        )
-        .await
-        {
+        match tokio::time::timeout(Duration::from_secs(300), self.update_result_rx.recv()).await {
             Ok(Some(envelope)) => {
                 let result_text = format_update_result(&envelope);
 
@@ -239,7 +237,10 @@ fn format_update_result(envelope: &Envelope) -> String {
                 .get("version")
                 .and_then(|v| v.as_str())
                 .unwrap_or("unknown");
-            format!("Update ACCEPTED — version {} deployed successfully.", version)
+            format!(
+                "Update ACCEPTED — version {} deployed successfully.",
+                version
+            )
         }
         msg_types::UPDATE_REJECTED => {
             let reason = envelope

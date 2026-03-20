@@ -2,19 +2,32 @@ use crate::deepseek::{FunctionDefinition, ToolDefinition};
 use crate::memory::MemoryManager;
 use crate::source::SourceManager;
 
+const DEFAULT_MAX_RESULTS: usize = 40;
+const ABSOLUTE_MAX_RESULTS: usize = 200;
+
 pub fn tool_definitions() -> Vec<ToolDefinition> {
     vec![
         ToolDefinition {
             type_: "function".to_string(),
             function: FunctionDefinition {
                 name: "read_source_file".to_string(),
-                description: "Read a file from the agent's source code. Path is relative to the peripheral crate root (e.g. 'src/main.rs', 'Cargo.toml')".to_string(),
+                description: "Read a file from the agent's source code. Supports optional 1-based line ranges. Path is relative to the peripheral crate root (e.g. 'src/main.rs', 'Cargo.toml')".to_string(),
                 parameters: serde_json::json!({
                     "type": "object",
                     "properties": {
                         "path": {
                             "type": "string",
                             "description": "Relative file path within the peripheral crate"
+                        },
+                        "start_line": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "description": "Optional start line (1-based, inclusive). Use with end_line to read a slice."
+                        },
+                        "end_line": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "description": "Optional end line (1-based, inclusive). Defaults to start_line when provided."
                         }
                     },
                     "required": ["path"]
@@ -42,7 +55,7 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
             type_: "function".to_string(),
             function: FunctionDefinition {
                 name: "write_source_file".to_string(),
-                description: "Write content to a file in the agent's source code working directory. Changes are written directly to disk. Path is relative to crates/peripheral/ (e.g. 'src/main.rs'). Provide the FULL file content.".to_string(),
+                description: "Write content to a file in the agent's source code working directory. Supports optional 1-based line ranges for precise edits. Path is relative to crates/peripheral/ (e.g. 'src/main.rs'). Provide the full replacement text for the targeted range or entire file.".to_string(),
                 parameters: serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -53,9 +66,45 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
                         "content": {
                             "type": "string",
                             "description": "Full file content to write"
+                        },
+                        "start_line": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "description": "Optional start line (1-based, inclusive). Provide to replace a specific slice."
+                        },
+                        "end_line": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "description": "Optional end line (1-based, inclusive). Defaults to start_line when provided."
                         }
                     },
                     "required": ["path", "content"]
+                }),
+            },
+        },
+        ToolDefinition {
+            type_: "function".to_string(),
+            function: FunctionDefinition {
+                name: "search_source_files".to_string(),
+                description: "Search source files for a query, respecting .gitignore. Paths are relative to the peripheral crate root.".to_string(),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "query": {
+                            "type": "string",
+                            "description": "Search term to look for in source files"
+                        },
+                        "path": {
+                            "type": "string",
+                            "description": "Optional directory or file path to scope the search. Defaults to '.'."
+                        },
+                        "max_results": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "description": "Maximum number of matches to return (default 40, capped at 200)."
+                        }
+                    },
+                    "required": ["query"]
                 }),
             },
         },
@@ -160,7 +209,12 @@ pub enum ToolResult {
     SubmitUpdate(String),
 }
 
-pub fn execute_tool(name: &str, arguments: &str, source: &mut SourceManager, memory: &mut MemoryManager) -> ToolResult {
+pub fn execute_tool(
+    name: &str,
+    arguments: &str,
+    source: &mut SourceManager,
+    memory: &mut MemoryManager,
+) -> ToolResult {
     let args: serde_json::Value = match serde_json::from_str(arguments) {
         Ok(v) => v,
         Err(e) => {
@@ -172,6 +226,24 @@ pub fn execute_tool(name: &str, arguments: &str, source: &mut SourceManager, mem
         }
     };
 
+    let extract_line_range_from_args =
+        |args: &serde_json::Value| -> Result<Option<(usize, usize)>, String> {
+            let start = args
+                .get("start_line")
+                .and_then(|v| v.as_u64())
+                .map(|v| v as usize);
+            let end = args
+                .get("end_line")
+                .and_then(|v| v.as_u64())
+                .map(|v| v as usize);
+            match (start, end) {
+                (None, None) => Ok(None),
+                (Some(s), None) => Ok(Some((s, s))),
+                (Some(s), Some(e)) => Ok(Some((s, e))),
+                (None, Some(_)) => Err("Provide start_line when end_line is set.".to_string()),
+            }
+        };
+
     match name {
         "read_source_file" => {
             let path = args["path"].as_str().unwrap_or("");
@@ -179,10 +251,15 @@ pub fn execute_tool(name: &str, arguments: &str, source: &mut SourceManager, mem
                 tracing::warn!(tool = %name, raw_arguments = %arguments, "Missing required 'path' parameter");
                 return ToolResult::Output(
                     "Error: 'path' parameter is required but was empty or missing. \
-                     Please provide a relative file path like 'src/main.rs'.".to_string()
+                     Please provide a relative file path like 'src/main.rs'."
+                        .to_string(),
                 );
             }
-            match source.read_file(path) {
+            let range = match extract_line_range_from_args(&args) {
+                Ok(r) => r,
+                Err(e) => return ToolResult::Output(format!("Error: {}", e)),
+            };
+            match source.read_file_range(path, range) {
                 Ok(content) => ToolResult::Output(content),
                 Err(e) => ToolResult::Output(format!("Error: {}", e)),
             }
@@ -201,11 +278,35 @@ pub fn execute_tool(name: &str, arguments: &str, source: &mut SourceManager, mem
                 tracing::warn!(tool = %name, raw_arguments = %arguments, "Missing required 'path' parameter");
                 return ToolResult::Output(
                     "Error: 'path' parameter is required but was empty or missing. \
-                     Please provide a relative file path like 'src/main.rs'.".to_string()
+                     Please provide a relative file path like 'src/main.rs'."
+                        .to_string(),
                 );
             }
-            match source.write_file(path, content) {
-                Ok(()) => ToolResult::Output(format!("Written: {}", path)),
+            let range = match extract_line_range_from_args(&args) {
+                Ok(r) => r,
+                Err(e) => return ToolResult::Output(format!("Error: {}", e)),
+            };
+            match source.write_file_range(path, content, range) {
+                Ok(report) => ToolResult::Output(report.summary()),
+                Err(e) => ToolResult::Output(format!("Error: {}", e)),
+            }
+        }
+        "search_source_files" => {
+            let query = args["query"].as_str().unwrap_or("");
+            if query.trim().is_empty() {
+                return ToolResult::Output(
+                    "Error: 'query' parameter is required but was empty or missing.".to_string(),
+                );
+            }
+            let path = args["path"].as_str().unwrap_or(".");
+            let max_results = args["max_results"]
+                .as_u64()
+                .map(|v| v as usize)
+                .unwrap_or(DEFAULT_MAX_RESULTS)
+                .clamp(1, ABSOLUTE_MAX_RESULTS);
+
+            match source.search(query, path, max_results) {
+                Ok(output) => ToolResult::Output(output),
                 Err(e) => ToolResult::Output(format!("Error: {}", e)),
             }
         }
@@ -319,10 +420,100 @@ mod tests {
         match result {
             ToolResult::Output(msg) => {
                 assert!(
-                    msg.contains("Written: src/test.rs"),
+                    msg.contains("Updated src/test.rs"),
                     "expected success, got: {}",
                     msg
                 );
+            }
+            other => panic!("expected Output, got: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn write_source_file_with_range_succeeds() {
+        let (_dir, mut source, mut memory) = temp_tools();
+        source
+            .write_file("src/test.rs", "line1\nline2\nline3\n")
+            .unwrap();
+
+        let result = execute_tool(
+            "write_source_file",
+            r#"{"path": "src/test.rs", "content": "// replace\n", "start_line": 2, "end_line": 2}"#,
+            &mut source,
+            &mut memory,
+        );
+
+        match result {
+            ToolResult::Output(msg) => {
+                assert!(
+                    msg.contains("lines 2-2"),
+                    "expected range summary, got: {}",
+                    msg
+                );
+            }
+            other => panic!("expected Output, got: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn write_source_file_requires_start_line_when_end_line_given() {
+        let (_dir, mut source, mut memory) = temp_tools();
+        let result = execute_tool(
+            "write_source_file",
+            r#"{"path": "src/test.rs", "content": "a", "end_line": 3}"#,
+            &mut source,
+            &mut memory,
+        );
+        match result {
+            ToolResult::Output(msg) => {
+                assert!(
+                    msg.contains("start_line"),
+                    "expected start_line error, got: {}",
+                    msg
+                );
+            }
+            other => panic!("expected Output, got: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn search_source_files_returns_match() {
+        let (_dir, mut source, mut memory) = temp_tools();
+        source.write_file("src/lib.rs", "needle here\n").unwrap();
+        let result = execute_tool(
+            "search_source_files",
+            r#"{"query": "needle", "path": "src"}"#,
+            &mut source,
+            &mut memory,
+        );
+        match result {
+            ToolResult::Output(msg) => {
+                assert!(
+                    msg.contains("src/lib.rs"),
+                    "expected search hit, got: {}",
+                    msg
+                );
+            }
+            other => panic!("expected Output, got: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn read_source_file_range_works() {
+        let (_dir, mut source, mut memory) = temp_tools();
+        source
+            .write_file("src/lib.rs", "one\ntwo\nthree\n")
+            .unwrap();
+        let result = execute_tool(
+            "read_source_file",
+            r#"{"path": "src/lib.rs", "start_line": 2, "end_line": 2}"#,
+            &mut source,
+            &mut memory,
+        );
+
+        match result {
+            ToolResult::Output(msg) => {
+                assert!(msg.contains("2: two"), "expected line 2, got: {}", msg);
             }
             other => panic!("expected Output, got: {:?}", other),
         }

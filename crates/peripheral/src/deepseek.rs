@@ -267,19 +267,15 @@ impl DeepSeekClient {
 
                     if let Some(ref tcs) = choice.delta.tool_calls {
                         for tc in tcs {
-                            let update =
-                                apply_tool_call_delta(&mut pending_tool_calls, tc.clone());
+                            let update = apply_tool_call_delta(&mut pending_tool_calls, tc.clone());
 
                             if let Some((id, name)) = update.start {
-                                let _ = event_tx
-                                    .send(StreamEvent::ToolCallStart { id, name })
-                                    .await;
+                                let _ =
+                                    event_tx.send(StreamEvent::ToolCallStart { id, name }).await;
                             }
 
                             if let Some(args) = update.arg_delta {
-                                let _ = event_tx
-                                    .send(StreamEvent::ToolCallArgDelta(args))
-                                    .await;
+                                let _ = event_tx.send(StreamEvent::ToolCallArgDelta(args)).await;
                             }
                         }
                     }
@@ -326,18 +322,13 @@ fn apply_tool_call_delta(
 
     let idx = tc.index.unwrap_or(0);
     let fn_call = tc.function.as_ref();
-    let fn_name = fn_call
-        .and_then(|f| f.name.clone())
-        .unwrap_or_default();
+    let fn_name = fn_call.and_then(|f| f.name.clone()).unwrap_or_default();
     let fn_args = fn_call.and_then(|f| f.arguments.clone());
 
     let mut update = ToolCallUpdate::default();
 
     if let Some(id) = tc.id {
-        let type_ = tc
-            .type_
-            .as_deref()
-            .unwrap_or(DEFAULT_TOOL_CALL_TYPE);
+        let type_ = tc.type_.as_deref().unwrap_or(DEFAULT_TOOL_CALL_TYPE);
 
         match pending_tool_calls.entry(idx) {
             Entry::Vacant(v) => {
@@ -455,10 +446,12 @@ mod tests {
             update.start,
             Some(("call-1".to_string(), "write_source_file".to_string()))
         );
-        assert!(pending
-            .get(&0)
-            .map(|tc| tc.function.arguments.is_empty())
-            .unwrap_or(false));
+        assert!(
+            pending
+                .get(&0)
+                .map(|tc| tc.function.arguments.is_empty())
+                .unwrap_or(false)
+        );
 
         let update2 = apply_tool_call_delta(&mut pending, second);
         assert!(update2.start.is_none(), "start should not fire twice");

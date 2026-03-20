@@ -87,7 +87,11 @@ async fn main() {
     let mut client = match AdminClient::connect(&socket_path).await {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("Failed to connect to boot at {}: {}", socket_path.display(), e);
+            eprintln!(
+                "Failed to connect to boot at {}: {}",
+                socket_path.display(),
+                e
+            );
             std::process::exit(1);
         }
     };
@@ -141,10 +145,7 @@ async fn cmd_status(client: &mut AdminClient) -> Result<(), BoxError> {
     );
     println!("Version locked:   {}", status.version_locked);
     println!("Probation active: {}", status.probation_active);
-    println!(
-        "Connected peers:  [{}]",
-        status.connected_peers.join(", ")
-    );
+    println!("Connected peers:  [{}]", status.connected_peers.join(", "));
     Ok(())
 }
 
@@ -176,10 +177,7 @@ async fn cmd_versions(client: &mut AdminClient) -> Result<(), BoxError> {
     Ok(())
 }
 
-async fn cmd_version_detail(
-    client: &mut AdminClient,
-    version: &str,
-) -> Result<(), BoxError> {
+async fn cmd_version_detail(client: &mut AdminClient, version: &str) -> Result<(), BoxError> {
     let resp = client
         .request(
             msg_types::ADMIN_VERSION_DETAIL_REQUEST,
@@ -236,10 +234,7 @@ async fn cmd_rollback(
     Ok(())
 }
 
-async fn cmd_cleanup(
-    client: &mut AdminClient,
-    keep: usize,
-) -> Result<(), BoxError> {
+async fn cmd_cleanup(client: &mut AdminClient, keep: usize) -> Result<(), BoxError> {
     let resp = client
         .request(
             msg_types::ADMIN_CLEANUP_VERSIONS_REQUEST,
@@ -299,10 +294,7 @@ async fn cmd_runlevel(
                 .await?;
             let result: messages::RunlevelRequestResult = serde_json::from_value(resp.payload)?;
             if result.accepted {
-                println!(
-                    "Runlevel changed: {} -> {}",
-                    result.from, result.to
-                );
+                println!("Runlevel changed: {} -> {}", result.from, result.to);
             } else {
                 eprintln!("Runlevel change rejected: {}", result.reason);
                 std::process::exit(1);

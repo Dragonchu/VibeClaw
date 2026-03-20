@@ -1,12 +1,12 @@
 use std::sync::Arc;
 
+use axum::Router;
 use axum::extract::State;
 use axum::http::header;
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{Html, IntoResponse};
 use axum::routing::{get, post};
-use axum::Router;
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::{Mutex, mpsc};
 use tokio_stream::wrappers::ReceiverStream;
 
 use crate::agent::{Agent, AgentEvent, AgentOutcome};
@@ -41,10 +41,7 @@ async fn reset(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     "ok"
 }
 
-async fn chat(
-    State(state): State<Arc<AppState>>,
-    body: String,
-) -> impl IntoResponse {
+async fn chat(State(state): State<Arc<AppState>>, body: String) -> impl IntoResponse {
     let (sse_tx, sse_rx) = mpsc::channel::<Result<Event, std::convert::Infallible>>(256);
 
     tokio::spawn(async move {
@@ -73,13 +70,17 @@ async fn chat(
             Ok(Err(e)) => {
                 let err_ev = AgentEvent::Error(e);
                 let _ = sse_tx
-                    .send(Ok(Event::default().data(serde_json::to_string(&err_ev).unwrap())))
+                    .send(Ok(
+                        Event::default().data(serde_json::to_string(&err_ev).unwrap())
+                    ))
                     .await;
             }
             Err(e) => {
                 let err_ev = AgentEvent::Error(format!("Agent task panicked: {}", e));
                 let _ = sse_tx
-                    .send(Ok(Event::default().data(serde_json::to_string(&err_ev).unwrap())))
+                    .send(Ok(
+                        Event::default().data(serde_json::to_string(&err_ev).unwrap())
+                    ))
                     .await;
             }
         }
