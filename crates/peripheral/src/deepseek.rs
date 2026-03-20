@@ -353,25 +353,49 @@ fn apply_tool_call_delta(
             }
             Entry::Occupied(mut o) => {
                 let tc_ref = o.get_mut();
-                debug_assert_eq!(
-                    tc_ref.id, id,
-                    "Tool call id changed within stream (idx={})",
-                    idx
-                );
-                debug_assert_eq!(
-                    tc_ref.type_.as_str(),
-                    type_,
-                    "Tool call type changed within stream (idx={})",
-                    idx
-                );
+                if tc_ref.id != id {
+                    tracing::warn!(
+                        %idx,
+                        previous = %tc_ref.id,
+                        new = %id,
+                        "Tool call id changed within stream"
+                    );
+                    debug_assert_eq!(
+                        tc_ref.id, id,
+                        "Tool call id changed within stream (idx={})",
+                        idx
+                    );
+                }
+                if tc_ref.type_.as_str() != type_ {
+                    tracing::warn!(
+                        %idx,
+                        previous = %tc_ref.type_,
+                        new = %type_,
+                        "Tool call type changed within stream"
+                    );
+                    debug_assert_eq!(
+                        tc_ref.type_.as_str(),
+                        type_,
+                        "Tool call type changed within stream (idx={})",
+                        idx
+                    );
+                }
                 if !fn_name.is_empty() && tc_ref.function.name.is_empty() {
                     tc_ref.function.name = fn_name.clone();
                 } else if !fn_name.is_empty() {
-                    debug_assert_eq!(
-                        tc_ref.function.name, fn_name,
-                        "Tool call name changed within stream (idx={})",
-                        idx
-                    );
+                    if tc_ref.function.name != fn_name {
+                        tracing::warn!(
+                            %idx,
+                            previous = %tc_ref.function.name,
+                            new = %fn_name,
+                            "Tool call name changed within stream"
+                        );
+                        debug_assert_eq!(
+                            tc_ref.function.name, fn_name,
+                            "Tool call name changed within stream (idx={})",
+                            idx
+                        );
+                    }
                 }
             }
         }
