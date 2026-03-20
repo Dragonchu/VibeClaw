@@ -310,6 +310,8 @@ impl DeepSeekClient {
     }
 }
 
+const DEFAULT_TOOL_CALL_TYPE: &str = "function";
+
 #[derive(Default)]
 struct ToolCallUpdate {
     start: Option<(String, String)>,
@@ -339,7 +341,7 @@ fn apply_tool_call_delta(
         let type_ = tc
             .type_
             .clone()
-            .unwrap_or_else(|| "function".to_string());
+            .unwrap_or_else(|| DEFAULT_TOOL_CALL_TYPE.to_string());
 
         match pending_tool_calls.entry(idx) {
             Entry::Vacant(v) => {
@@ -355,8 +357,16 @@ fn apply_tool_call_delta(
             }
             Entry::Occupied(mut o) => {
                 let tc_ref = o.get_mut();
-                tc_ref.id = id.clone();
-                tc_ref.type_ = type_.clone();
+                debug_assert_eq!(
+                    tc_ref.id, id,
+                    "Tool call id changed within stream (idx={})",
+                    idx
+                );
+                debug_assert_eq!(
+                    tc_ref.type_, type_,
+                    "Tool call type changed within stream (idx={})",
+                    idx
+                );
                 if !fn_name.is_empty() {
                     tc_ref.function.name = fn_name.clone();
                 }
