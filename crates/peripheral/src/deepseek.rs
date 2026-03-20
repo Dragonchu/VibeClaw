@@ -325,29 +325,25 @@ fn apply_tool_call_delta(
     use std::collections::btree_map::Entry;
 
     let idx = tc.index.unwrap_or(0);
-    let fn_name = tc
-        .function
-        .as_ref()
+    let fn_call = tc.function.as_ref();
+    let fn_name = fn_call
         .and_then(|f| f.name.clone())
         .unwrap_or_default();
-    let fn_args = tc
-        .function
-        .as_ref()
-        .and_then(|f| f.arguments.clone());
+    let fn_args = fn_call.and_then(|f| f.arguments.clone());
 
     let mut update = ToolCallUpdate::default();
 
     if let Some(id) = tc.id {
         let type_ = tc
             .type_
-            .clone()
-            .unwrap_or_else(|| DEFAULT_TOOL_CALL_TYPE.to_string());
+            .as_deref()
+            .unwrap_or(DEFAULT_TOOL_CALL_TYPE);
 
         match pending_tool_calls.entry(idx) {
             Entry::Vacant(v) => {
                 v.insert(ToolCall {
                     id: id.clone(),
-                    type_: type_.clone(),
+                    type_: type_.to_string(),
                     function: FunctionCall {
                         name: fn_name.clone(),
                         arguments: String::new(),
@@ -363,12 +359,19 @@ fn apply_tool_call_delta(
                     idx
                 );
                 debug_assert_eq!(
-                    tc_ref.type_, type_,
+                    tc_ref.type_.as_str(),
+                    type_,
                     "Tool call type changed within stream (idx={})",
                     idx
                 );
-                if !fn_name.is_empty() {
+                if !fn_name.is_empty() && tc_ref.function.name.is_empty() {
                     tc_ref.function.name = fn_name.clone();
+                } else if !fn_name.is_empty() {
+                    debug_assert_eq!(
+                        tc_ref.function.name, fn_name,
+                        "Tool call name changed within stream (idx={})",
+                        idx
+                    );
                 }
             }
         }
