@@ -267,47 +267,19 @@ impl DeepSeekClient {
 
                     if let Some(ref tcs) = choice.delta.tool_calls {
                         for tc in tcs {
-                            let idx = tc.index.unwrap_or(0);
+                            let update =
+                                apply_tool_call_delta(&mut pending_tool_calls, tc.clone());
 
-                            if let Some(ref id) = tc.id {
-                                let name = tc
-                                    .function
-                                    .as_ref()
-                                    .and_then(|f| f.name.clone())
-                                    .unwrap_or_default();
-                                pending_tool_calls.insert(
-                                    idx,
-                                    ToolCall {
-                                        id: id.clone(),
-                                        type_: tc
-                                            .type_
-                                            .clone()
-                                            .unwrap_or_else(|| "function".into()),
-                                        function: FunctionCall {
-                                            name: name.clone(),
-                                            arguments: String::new(),
-                                        },
-                                    },
-                                );
+                            if let Some((id, name)) = update.start {
                                 let _ = event_tx
-                                    .send(StreamEvent::ToolCallStart {
-                                        id: id.clone(),
-                                        name,
-                                    })
+                                    .send(StreamEvent::ToolCallStart { id, name })
                                     .await;
                             }
 
-                            if let Some(ref f) = tc.function {
-                                if let Some(ref args) = f.arguments {
-                                    if let Some(tc_ref) =
-                                        pending_tool_calls.get_mut(&idx)
-                                    {
-                                        tc_ref.function.arguments.push_str(args);
-                                    }
-                                    let _ = event_tx
-                                        .send(StreamEvent::ToolCallArgDelta(args.clone()))
-                                        .await;
-                                }
+                            if let Some(args) = update.arg_delta {
+                                let _ = event_tx
+                                    .send(StreamEvent::ToolCallArgDelta(args))
+                                    .await;
                             }
                         }
                     }
@@ -335,5 +307,171 @@ impl DeepSeekClient {
         };
 
         Ok(message)
+    }
+}
+
+const DEFAULT_TOOL_CALL_TYPE: &str = "function";
+
+#[derive(Default)]
+struct ToolCallUpdate {
+    start: Option<(String, String)>,
+    arg_delta: Option<String>,
+}
+
+fn apply_tool_call_delta(
+    pending_tool_calls: &mut std::collections::BTreeMap<usize, ToolCall>,
+    tc: StreamToolCall,
+) -> ToolCallUpdate {
+    use std::collections::btree_map::Entry;
+
+    let idx = tc.index.unwrap_or(0);
+    let fn_call = tc.function.as_ref();
+    let fn_name = fn_call
+        .and_then(|f| f.name.clone())
+        .unwrap_or_default();
+    let fn_args = fn_call.and_then(|f| f.arguments.clone());
+
+    let mut update = ToolCallUpdate::default();
+
+    if let Some(id) = tc.id {
+        let type_ = tc
+            .type_
+            .as_deref()
+            .unwrap_or(DEFAULT_TOOL_CALL_TYPE);
+
+        match pending_tool_calls.entry(idx) {
+            Entry::Vacant(v) => {
+                v.insert(ToolCall {
+                    id: id.clone(),
+                    type_: type_.to_string(),
+                    function: FunctionCall {
+                        name: fn_name.clone(),
+                        arguments: String::new(),
+                    },
+                });
+                update.start = Some((id, fn_name.clone()));
+            }
+            Entry::Occupied(mut o) => {
+                let tc_ref = o.get_mut();
+                if tc_ref.id != id {
+                    tracing::warn!(
+                        %idx,
+                        previous = %tc_ref.id,
+                        new = %id,
+                        "Tool call id changed within stream"
+                    );
+                    debug_assert_eq!(
+                        tc_ref.id, id,
+                        "Tool call id changed within stream (idx={})",
+                        idx
+                    );
+                }
+                if tc_ref.type_.as_str() != type_ {
+                    tracing::warn!(
+                        %idx,
+                        previous = %tc_ref.type_,
+                        new = %type_,
+                        "Tool call type changed within stream"
+                    );
+                    debug_assert_eq!(
+                        tc_ref.type_.as_str(),
+                        type_,
+                        "Tool call type changed within stream (idx={})",
+                        idx
+                    );
+                }
+                if !fn_name.is_empty() && tc_ref.function.name.is_empty() {
+                    tc_ref.function.name = fn_name.clone();
+                } else if !fn_name.is_empty() {
+                    if tc_ref.function.name != fn_name {
+                        tracing::warn!(
+                            %idx,
+                            previous = %tc_ref.function.name,
+                            new = %fn_name,
+                            "Tool call name changed within stream"
+                        );
+                        debug_assert_eq!(
+                            tc_ref.function.name, fn_name,
+                            "Tool call name changed within stream (idx={})",
+                            idx
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    if let Some(args) = fn_args {
+        if let Some(tc_ref) = pending_tool_calls.get_mut(&idx) {
+            tc_ref.function.arguments.push_str(&args);
+        }
+        update.arg_delta = Some(args);
+    }
+
+    update
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::BTreeMap;
+
+    #[test]
+    fn tool_call_delta_preserves_arguments_across_duplicate_ids() {
+        let mut pending: BTreeMap<usize, ToolCall> = BTreeMap::new();
+
+        let first = StreamToolCall {
+            index: Some(0),
+            id: Some("call-1".into()),
+            type_: Some("function".into()),
+            function: Some(StreamFunctionCall {
+                name: Some("write_source_file".into()),
+                arguments: None,
+            }),
+        };
+
+        let second = StreamToolCall {
+            index: Some(0),
+            id: Some("call-1".into()),
+            type_: Some("function".into()),
+            function: Some(StreamFunctionCall {
+                name: Some("write_source_file".into()),
+                arguments: Some("part-1".into()),
+            }),
+        };
+
+        let third = StreamToolCall {
+            index: Some(0),
+            id: Some("call-1".into()),
+            type_: Some("function".into()),
+            function: Some(StreamFunctionCall {
+                name: Some("write_source_file".into()),
+                arguments: Some("part-2".into()),
+            }),
+        };
+
+        let update = apply_tool_call_delta(&mut pending, first);
+        assert_eq!(
+            update.start,
+            Some(("call-1".to_string(), "write_source_file".to_string()))
+        );
+        assert!(pending
+            .get(&0)
+            .map(|tc| tc.function.arguments.is_empty())
+            .unwrap_or(false));
+
+        let update2 = apply_tool_call_delta(&mut pending, second);
+        assert!(update2.start.is_none(), "start should not fire twice");
+        assert_eq!(
+            pending.get(&0).unwrap().function.arguments,
+            "part-1".to_string()
+        );
+
+        apply_tool_call_delta(&mut pending, third);
+        assert_eq!(
+            pending.get(&0).unwrap().function.arguments,
+            "part-1part-2".to_string(),
+            "arguments should accumulate across deltas without being reset"
+        );
     }
 }
