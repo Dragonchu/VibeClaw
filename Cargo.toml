@@ -28,3 +28,5 @@ axum = "0.8"
 tokio-stream = "0.1"
 clap = { version = "4", features = ["derive"] }
 reloopy-ipc = { path = "crates/ipc" }
+passfd = "0.1.6"
+libc = "0.2"

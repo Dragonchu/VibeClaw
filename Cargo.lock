@@ -1045,6 +1045,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "passfd"
+version = "0.1.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b332c50e4d07c0011fff51ea305374408319908908bc1dbed7a0ffaaf63a8151"
+dependencies = [
+ "libc",
+]
+
+[[package]]
 name = "percent-encoding"
 version = "2.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1180,6 +1189,7 @@ version = "0.1.0"
 dependencies = [
  "hex",
  "hmac",
+ "libc",
  "reloopy-ipc",
  "serde",
  "serde_json",
@@ -1206,6 +1216,7 @@ dependencies = [
 name = "reloopy-ipc"
 version = "0.1.0"
 dependencies = [
+ "passfd",
  "serde",
  "serde_json",
  "tokio",
@@ -1230,6 +1241,7 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "ignore",
+ "libc",
  "regex",
  "reloopy-ipc",
  "reqwest",

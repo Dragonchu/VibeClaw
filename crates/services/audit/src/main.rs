@@ -85,6 +85,7 @@ async fn run_service(config: &Config) -> Result<(), Box<dyn std::error::Error + 
         msg_type: msg_types::HELLO.to_string(),
         id: new_msg_id(),
         payload: serde_json::to_value(&hello)?,
+        fds: Vec::new(),
     };
 
     wire::write_envelope(&mut writer, &hello_envelope).await?;
@@ -126,6 +127,7 @@ async fn run_service(config: &Config) -> Result<(), Box<dyn std::error::Error + 
                     msg_type: msg_types::LEASE_RENEW.to_string(),
                     id: new_msg_id(),
                     payload: serde_json::to_value(&renew)?,
+                fds: Vec::new(),
                 };
 
                 wire::write_envelope(&mut writer, &envelope).await?;

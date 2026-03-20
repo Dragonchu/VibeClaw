@@ -146,6 +146,7 @@ impl InvariantRunner {
                 msg_type: msg_types::WELCOME.to_string(),
                 id: hello_env.id,
                 payload: serde_json::to_value(&welcome).unwrap_or_default(),
+                fds: Vec::new(),
             };
 
             wire::write_envelope(&mut writer, &response)
@@ -181,6 +182,7 @@ impl InvariantRunner {
                 msg_type: msg_types::WELCOME.to_string(),
                 id: hello_env.id,
                 payload: serde_json::to_value(&welcome).unwrap_or_default(),
+                fds: Vec::new(),
             };
 
             wire::write_envelope(&mut writer, &welcome_response)
@@ -194,6 +196,7 @@ impl InvariantRunner {
                 msg_type: "Echo".to_string(),
                 id: "echo-test-1".to_string(),
                 payload: echo_payload.clone(),
+                fds: Vec::new(),
             };
 
             wire::write_envelope(&mut writer, &echo_request)
@@ -258,6 +261,7 @@ impl InvariantRunner {
                 msg_type: msg_types::WELCOME.to_string(),
                 id: hello_env.id,
                 payload: serde_json::to_value(&welcome).unwrap_or_default(),
+                fds: Vec::new(),
             };
 
             wire::write_envelope(&mut writer, &welcome_response)

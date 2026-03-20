@@ -4,6 +4,8 @@
 //! All other messages are treated as opaque JSON payloads and routed by `from`/`to` fields.
 
 use serde::{Deserialize, Serialize};
+use std::os::unix::io::OwnedFd;
+use std::sync::Arc;
 
 // ---------------------------------------------------------------------------
 // Message envelope — every IPC message is wrapped in this
@@ -25,6 +27,9 @@ pub struct Envelope {
     pub id: String,
     /// Arbitrary JSON payload — Boot only parses this for core message types
     pub payload: serde_json::Value,
+    /// File descriptors attached out-of-band via SCM_RIGHTS (not serialized)
+    #[serde(skip, default)]
+    pub fds: Vec<Arc<OwnedFd>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -86,6 +91,14 @@ pub struct Shutdown {
     /// Grace period in milliseconds before force-kill
     pub grace_ms: u64,
 }
+
+/// Prepare for listener handoff: Boot → Peripheral
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PrepareHandoff;
+
+/// Listener handoff ready: Peripheral → Boot (fd attached via SCM_RIGHTS)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HandoffReady;
 
 // ---------------------------------------------------------------------------
 // Update loop message types (Phase 2)
@@ -432,6 +445,8 @@ pub mod msg_types {
     pub const LEASE_ACK: &str = "LeaseAck";
     pub const RUNLEVEL_CHANGE: &str = "RunlevelChange";
     pub const SHUTDOWN: &str = "Shutdown";
+    pub const PREPARE_HANDOFF: &str = "PrepareHandoff";
+    pub const HANDOFF_READY: &str = "HandoffReady";
 
     pub const SUBMIT_UPDATE: &str = "SubmitUpdate";
     pub const COMPILE_REQUEST: &str = "CompileRequest";
@@ -490,6 +505,8 @@ pub fn is_core_message(msg_type: &str) -> bool {
             | msg_types::LEASE_ACK
             | msg_types::RUNLEVEL_CHANGE
             | msg_types::SHUTDOWN
+            | msg_types::PREPARE_HANDOFF
+            | msg_types::HANDOFF_READY
             | msg_types::SUBMIT_UPDATE
             | msg_types::COMPILE_REQUEST
             | msg_types::COMPILE_RESULT
