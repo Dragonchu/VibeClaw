@@ -3,6 +3,7 @@ mod deepseek;
 mod ipc_client;
 mod memory;
 mod migration;
+mod scripted_llm;
 mod source;
 mod tools;
 mod web;
@@ -168,7 +169,7 @@ async fn main() {
 }
 
 async fn run(
-    deepseek: DeepSeekClient,
+    llm: DeepSeekClient,
     source: SourceManager,
     memory: MemoryManager,
     ipc: IpcHandle,
@@ -311,7 +312,7 @@ async fn run(
         }
     });
 
-    let agent = Agent::new(deepseek, source, memory, ipc_tx, update_result_rx);
+    let agent = Agent::new(llm, source, memory, ipc_tx, update_result_rx);
 
     let app_state = Arc::new(AppState {
         agent: Mutex::new(agent),

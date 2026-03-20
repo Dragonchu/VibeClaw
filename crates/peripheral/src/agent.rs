@@ -2,7 +2,7 @@ use std::{fmt::Write, time::Duration};
 
 use tokio::sync::mpsc;
 
-use crate::deepseek::{ChatMessage, DeepSeekClient, StreamEvent};
+use crate::deepseek::{ChatMessage, LlmClient, StreamEvent};
 use crate::ipc_client;
 use crate::memory::MemoryManager;
 use crate::source::SourceManager;
@@ -68,8 +68,8 @@ pub enum AgentOutcome {
     Done,
 }
 
-pub struct Agent {
-    deepseek: DeepSeekClient,
+pub struct Agent<L: LlmClient> {
+    llm: L,
     source: SourceManager,
     memory: MemoryManager,
     conversation: Vec<ChatMessage>,
@@ -77,9 +77,9 @@ pub struct Agent {
     update_result_rx: mpsc::Receiver<Envelope>,
 }
 
-impl Agent {
+impl<L: LlmClient> Agent<L> {
     pub fn new(
-        deepseek: DeepSeekClient,
+        llm: L,
         source: SourceManager,
         memory: MemoryManager,
         ipc_tx: mpsc::Sender<Envelope>,
@@ -87,7 +87,7 @@ impl Agent {
     ) -> Self {
         let system_prompt = build_system_prompt(&memory);
         Self {
-            deepseek,
+            llm,
             source,
             memory,
             conversation: vec![ChatMessage::system(&system_prompt)],
@@ -110,9 +110,7 @@ impl Agent {
             let messages = self.conversation.clone();
             let tools_ref = tool_defs.as_slice();
 
-            let chat_handle = self
-                .deepseek
-                .chat_stream(&messages, Some(tools_ref), stream_tx);
+            let chat_handle = self.llm.chat_stream(&messages, Some(tools_ref), stream_tx);
 
             let event_tx_clone = event_tx.clone();
             let forward_handle = tokio::spawn(async move {
