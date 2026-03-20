@@ -207,6 +207,18 @@ sleep 1
 check_alive "reloopy-compiler" "$COMPILER_PID" "${LOG_DIR}/compiler.log"
 ok "reloopy-compiler running  (pid ${COMPILER_PID}, log: .reloopy/logs/compiler.log)"
 
+# ── reloopy-admin-web ──────────────────────────────────────────────────────────
+info "Starting reloopy-admin-web (dashboard)…"
+RUST_LOG="${RUST_LOG:-info}" \
+    "${SCRIPT_DIR}/target/release/reloopy-admin-web" \
+    > "${LOG_DIR}/admin-web.log" 2>&1 &
+PIDS+=($!)
+ADMIN_WEB_PID=$!
+sleep 1
+check_alive "reloopy-admin-web" "$ADMIN_WEB_PID" "${LOG_DIR}/admin-web.log"
+ADMIN_WEB_PORT="${RELOOPY_ADMIN_WEB_PORT:-7801}"
+ok "reloopy-admin-web running  (pid ${ADMIN_WEB_PID}, log: .reloopy/logs/admin-web.log)"
+
 # ── reloopy-peripheral ─────────────────────────────────────────────────────────
 if [[ "${SKIP_PERIPHERAL}" -eq 0 ]]; then
     info "Starting reloopy-peripheral…"
@@ -224,9 +236,11 @@ if [[ "${SKIP_PERIPHERAL}" -eq 0 ]]; then
     ACTUAL_PORT=$(sed -n 's/.*HTTP server listening on http:\/\/[^:]*:\([0-9]*\).*/\1/p' "${LOG_DIR}/peripheral.log" | tail -1)
     ACTUAL_PORT="${ACTUAL_PORT:-${RELOOPY_HTTP_PORT:-7700}}"
     echo ""
-    echo -e "${BOLD}  ➜  Open http://127.0.0.1:${ACTUAL_PORT}${RESET}"
+    echo -e "${BOLD}  ➜  Agent UI  http://127.0.0.1:${ACTUAL_PORT}${RESET}"
 fi
 
+echo ""
+echo -e "${BOLD}  ➜  Dashboard  http://127.0.0.1:${ADMIN_WEB_PORT}${RESET}"
 echo ""
 info "Press Ctrl-C to stop all services."
 wait
