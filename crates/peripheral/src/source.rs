@@ -1,6 +1,6 @@
 use ignore::{WalkBuilder, gitignore::GitignoreBuilder};
-use similar::TextDiff;
 use regex::Regex;
+use similar::TextDiff;
 use std::fmt::Write;
 use std::fs;
 use std::path::{Path, PathBuf};

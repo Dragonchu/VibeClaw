@@ -11,9 +11,10 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
+use tokio::net::TcpListener;
 use tokio::sync::{Mutex, mpsc};
 
-use reloopy_ipc::messages::{Envelope, msg_types};
+use reloopy_ipc::messages::{self, Envelope, msg_types};
 
 use crate::agent::Agent;
 use crate::deepseek::DeepSeekClient;
@@ -176,6 +177,7 @@ async fn run(
 ) {
     let ipc_tx = ipc.tx;
     let runlevel = ipc.runlevel;
+    let inherited_listener = ipc.inherited_listener;
 
     let heartbeat_tx = ipc_tx.clone();
     tokio::spawn(async move {
@@ -195,6 +197,8 @@ async fn run(
     let shutdown_for_ipc = shutdown_notify.clone();
     let message_tx = update_result_tx.clone();
     let mut ipc_rx = ipc.rx;
+    let ipc_tx_for_ipc = ipc_tx.clone();
+    let listener_for_ipc = std_listener.clone();
     tokio::spawn(async move {
         while let Some(envelope) = ipc_rx.recv().await {
             match envelope.msg_type.as_str() {
@@ -215,6 +219,38 @@ async fn run(
                 msg_types::RUNLEVEL_CHANGE => {
                     tracing::info!("Runlevel change: {}", envelope.payload);
                 }
+                msg_types::PREPARE_HANDOFF => {
+                    tracing::info!("PrepareHandoff received — sending listener fd");
+                    #[cfg(unix)]
+                    {
+                        use std::os::unix::io::IntoRawFd;
+
+                        let duplicate = match listener_for_ipc.try_clone() {
+                            Ok(l) => l,
+                            Err(e) => {
+                                tracing::error!("Failed to clone listener for handoff: {}", e);
+                                continue;
+                            }
+                        };
+                        let fd = duplicate.into_raw_fd();
+                        unsafe {
+                            let flags = libc::fcntl(fd, libc::F_GETFD);
+                            if flags >= 0 {
+                                let _ = libc::fcntl(fd, libc::F_SETFD, flags & !libc::FD_CLOEXEC);
+                            }
+                        }
+                        let handoff = Envelope {
+                            from: "peripheral".to_string(),
+                            to: "boot".to_string(),
+                            msg_type: msg_types::HANDOFF_READY.to_string(),
+                            id: ipc_client::new_msg_id(),
+                            payload: serde_json::to_value(&messages::HandoffReady)
+                                .unwrap_or_default(),
+                            fds: vec![Arc::new(unsafe { OwnedFd::from_raw_fd(fd) })],
+                        };
+                        let _ = ipc_tx_for_ipc.send(handoff).await;
+                    }
+                }
                 msg_types::UPDATE_ACCEPTED | msg_types::UPDATE_REJECTED => {
                     let _ = message_tx.send(envelope).await;
                 }
@@ -233,23 +269,55 @@ async fn run(
 
     let router = web::build_router(app_state);
 
-    let addr = std::net::SocketAddr::from(([0, 0, 0, 0], http_port));
-    let listener = match tokio::net::TcpListener::bind(addr).await {
-        Ok(l) => l,
-        Err(e) => {
-            tracing::warn!(
-                "Failed to bind HTTP on {}: {}; falling back to OS-assigned port",
-                addr,
-                e
-            );
-            let fallback = std::net::SocketAddr::from(([0, 0, 0, 0], 0u16));
-            match tokio::net::TcpListener::bind(fallback).await {
-                Ok(l) => l,
-                Err(e2) => {
-                    tracing::error!("Failed to bind HTTP on fallback port: {}", e2);
-                    std::process::exit(1);
+    let std_listener = if let Some(fd) = inherited_listener {
+        #[cfg(unix)]
+        {
+            use std::os::unix::io::FromRawFd;
+            use std::os::unix::io::IntoRawFd;
+
+            let raw = fd.into_raw_fd();
+            let std_listener = unsafe { std::net::TcpListener::from_raw_fd(raw) };
+            tracing::info!("Using inherited HTTP listener fd");
+            std_listener
+        }
+        #[cfg(not(unix))]
+        {
+            tracing::error!("Inherited listener not supported on non-Unix platforms");
+            std::process::exit(1);
+        }
+    } else {
+        let addr = std::net::SocketAddr::from(([0, 0, 0, 0], http_port));
+        match std::net::TcpListener::bind(addr) {
+            Ok(l) => l,
+            Err(e) => {
+                tracing::warn!(
+                    "Failed to bind HTTP on {}: {}; falling back to OS-assigned port",
+                    addr,
+                    e
+                );
+                let fallback = std::net::SocketAddr::from(([0, 0, 0, 0], 0u16));
+                match std::net::TcpListener::bind(fallback) {
+                    Ok(l) => l,
+                    Err(e2) => {
+                        tracing::error!("Failed to bind HTTP on fallback port: {}", e2);
+                        std::process::exit(1);
+                    }
                 }
             }
+        }
+    };
+
+    std_listener
+        .set_nonblocking(true)
+        .unwrap_or_else(|e| tracing::warn!("Failed to set listener nonblocking: {}", e));
+
+    let std_listener = Arc::new(std_listener);
+
+    let listener = match TcpListener::from_std(std_listener.try_clone().unwrap()) {
+        Ok(l) => l,
+        Err(e) => {
+            tracing::error!("Failed to adopt listener: {}", e);
+            std::process::exit(1);
         }
     };
 

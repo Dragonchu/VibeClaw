@@ -288,10 +288,13 @@ async fn handle_connection(
     boot_tx: mpsc::Sender<Envelope>,
     handle: RouterHandle,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let (mut read_half, write_half) = stream.into_split();
+    // Keep separate clones for reader and writer so we can pass file descriptors
+    // using SCM_RIGHTS via the full stream (splitting loses that capability).
+    let mut read_stream = stream.try_clone()?;
+    let write_stream = stream;
 
     // Wait for the first message to identify the peer
-    let first_envelope = wire::read_envelope(&mut read_half).await?;
+    let first_envelope = wire::read_envelope_with_fds(&read_stream).await?;
     let identity = first_envelope.from.clone();
 
     tracing::info!(peer = %identity, "New peer connected");
@@ -307,15 +310,12 @@ async fn handle_connection(
         tracing::warn!("Failed to forward Hello to boot: {}", e);
     }
 
-    let identity_for_writer = identity.clone();
-    let identity_for_reader = identity.clone();
-    let handle_for_reader = handle.clone();
-
     // Writer task: take messages from the channel and write to the socket
+    let identity_for_writer = identity.clone();
     let writer_handle = tokio::spawn(async move {
-        let mut writer = write_half;
+        let writer = write_stream;
         while let Some(msg) = rx.recv().await {
-            if let Err(e) = wire::write_envelope(&mut writer, &msg).await {
+            if let Err(e) = wire::write_envelope_with_fds(&writer, &msg).await {
                 tracing::warn!(peer = %identity_for_writer, "Write error: {}", e);
                 break;
             }
@@ -323,12 +323,14 @@ async fn handle_connection(
     });
 
     // Reader task: read messages from the socket and route them
+    let identity_for_reader = identity.clone();
+    let handle_for_reader = handle.clone();
     let reader_handle = tokio::spawn(async move {
+        let mut reader = read_stream;
         let identity = identity_for_reader;
         let handle = handle_for_reader;
-
         loop {
-            match wire::read_envelope(&mut read_half).await {
+            match wire::read_envelope_with_fds(&reader).await {
                 Ok(envelope) => {
                     let dest = envelope.to.clone();
 
@@ -415,6 +417,7 @@ mod tests {
             msg_type: "test".into(),
             id: "1".into(),
             payload: serde_json::Value::Null,
+            fds: Vec::new(),
         };
         let result = handle.send_to("peer", env).await;
         assert!(result.is_err());
@@ -466,6 +469,7 @@ mod tests {
             msg_type: "test".into(),
             id: "1".into(),
             payload: serde_json::Value::Null,
+            fds: Vec::new(),
         };
         let result = handle.send_to("compiler", env.clone()).await;
         assert!(result.is_ok());
@@ -494,6 +498,7 @@ mod tests {
             msg_type: "test".into(),
             id: "1".into(),
             payload: serde_json::Value::Null,
+            fds: Vec::new(),
         };
         let result = handle.send_to("ghost", env).await;
         assert!(result.is_err());
@@ -527,6 +532,7 @@ mod tests {
             msg_type: "test".into(),
             id: "1".into(),
             payload: serde_json::Value::Null,
+            fds: Vec::new(),
         };
         let result = handle.send_to("compiler", env).await;
         assert!(result.is_err());
@@ -557,6 +563,7 @@ mod tests {
             msg_type: "runlevel_change".into(),
             id: "".into(),
             payload: serde_json::Value::Null,
+            fds: Vec::new(),
         };
         handle.broadcast(env).await;
 
@@ -637,6 +644,7 @@ mod tests {
             msg_type: "welcome".into(),
             id: "42".into(),
             payload: serde_json::Value::Null,
+            fds: Vec::new(),
         };
         let result = handle.send(env).await;
         assert!(result.is_ok());

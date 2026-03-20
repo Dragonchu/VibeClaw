@@ -348,6 +348,7 @@ mod tests {
             msg_type: msg_types::UPDATE_ACCEPTED.to_string(),
             id: "test-1".to_string(),
             payload: serde_json::json!({"version": "V3"}),
+            fds: Vec::new(),
         };
         let result = format_update_result(&envelope);
         assert!(result.contains("ACCEPTED"));
@@ -383,6 +384,7 @@ mod tests {
             msg_type: msg_types::UPDATE_REJECTED.to_string(),
             id: "test-3".to_string(),
             payload: serde_json::json!({"version": "V5", "reason": "test_failed"}),
+            fds: Vec::new(),
         };
         let result = format_update_result(&envelope);
         assert!(result.contains("REJECTED"));

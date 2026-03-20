@@ -8,6 +8,7 @@
 //! - Track runlevel state
 
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crate::capability::CapabilityManager;
@@ -19,7 +20,9 @@ use crate::resource::{ResourceLimits, ResourceMonitor, ViolationSeverity};
 use crate::runlevel::{Runlevel, RunlevelManager, TransitionReason};
 use crate::state::{MigrationTransaction, StateStore};
 use crate::version::VersionManager;
+use libc;
 use reloopy_ipc::messages::{self, Envelope, LeaseAck, TestVerdict, Welcome, msg_types};
+use std::os::unix::io::{AsRawFd, OwnedFd};
 
 #[derive(Debug, Clone)]
 pub struct BootConfig {
@@ -108,11 +111,18 @@ const HOT_SWAP_HANDSHAKE_TIMEOUT_SECS: u64 = 60;
 
 enum HotSwapState {
     Idle,
+    WaitingForHandoffReady {
+        new_version: String,
+        new_binary: PathBuf,
+        old_version: String,
+        initiated_at: Instant,
+    },
     WaitingForOldDisconnect {
         new_version: String,
         new_binary: PathBuf,
         old_version: String,
         initiated_at: Instant,
+        listener_fd: Arc<OwnedFd>,
     },
     WaitingForNewHandshake {
         new_version: String,
@@ -120,6 +130,7 @@ enum HotSwapState {
         initiated_at: Instant,
         #[allow(dead_code)]
         child: Option<tokio::process::Child>,
+        listener_fd: Option<Arc<OwnedFd>>,
     },
 }
 
@@ -272,6 +283,9 @@ impl Microkernel {
             msg_types::HELLO => {
                 self.handle_hello(envelope, router).await;
             }
+            msg_types::HANDOFF_READY => {
+                self.handle_handoff_ready(envelope, router).await;
+            }
             msg_types::LEASE_RENEW => {
                 self.handle_lease_renew(envelope, router).await;
             }
@@ -368,6 +382,23 @@ impl Microkernel {
 
         self.lease_manager.register(from.clone());
 
+        let mut listener_fd_to_send: Option<Arc<OwnedFd>> = None;
+        let mut pending_hot_swap: Option<(String, Option<tokio::process::Child>)> = None;
+
+        if from == "peripheral" {
+            if let HotSwapState::WaitingForNewHandshake {
+                new_version,
+                old_version: _,
+                initiated_at: _,
+                child,
+                listener_fd,
+            } = &mut self.hot_swap
+            {
+                listener_fd_to_send = listener_fd.take();
+                pending_hot_swap = Some((new_version.clone(), child.take()));
+            }
+        }
+
         let welcome = Welcome {
             accepted_capabilities: hello.capabilities.clone(),
             runlevel: self.runlevel_manager.current().as_u8(),
@@ -379,6 +410,10 @@ impl Microkernel {
             msg_type: msg_types::WELCOME.to_string(),
             id: envelope.id.clone(),
             payload: serde_json::to_value(&welcome).unwrap_or_default(),
+            fds: listener_fd_to_send
+                .as_ref()
+                .map(|fd| vec![fd.clone()])
+                .unwrap_or_default(),
         };
 
         if let Err(e) = router.send_to(from, response).await {
@@ -386,27 +421,105 @@ impl Microkernel {
         } else {
             tracing::info!(peer = %from, "Handshake complete");
 
-            if from == "peripheral" {
-                if matches!(self.hot_swap, HotSwapState::WaitingForNewHandshake { .. }) {
-                    let old_state = std::mem::replace(&mut self.hot_swap, HotSwapState::Idle);
-                    if let HotSwapState::WaitingForNewHandshake {
-                        new_version, child, ..
-                    } = old_state
-                    {
-                        tracing::info!(
-                            version = %new_version,
-                            "New peripheral connected — hot swap complete"
-                        );
-                        self.peripheral_child = child;
-                        self.send_audit(
-                            router,
-                            "hot_swap_complete",
-                            Some(&new_version),
-                            serde_json::json!({}),
-                        )
-                        .await;
-                    }
+            if let Some((new_version, child)) = pending_hot_swap {
+                tracing::info!(
+                    version = %new_version,
+                    "New peripheral connected — hot swap complete"
+                );
+                // Stop the old peripheral process before installing the new handle.
+                let shutdown = messages::Shutdown {
+                    reason: format!("Hot replacement: upgraded to {}", new_version),
+                    grace_ms: 2000,
+                };
+                let shutdown_envelope = Envelope {
+                    from: "boot".to_string(),
+                    to: "peripheral".to_string(),
+                    msg_type: msg_types::SHUTDOWN.to_string(),
+                    id: String::new(),
+                    payload: serde_json::to_value(&shutdown).unwrap_or_default(),
+                    fds: Vec::new(),
+                };
+                let _ = router.broadcast(shutdown_envelope).await;
+                self.kill_peripheral_process().await;
+                self.peripheral_child = child;
+                self.send_audit(
+                    router,
+                    "hot_swap_complete",
+                    Some(&new_version),
+                    serde_json::json!({}),
+                )
+                .await;
+                self.hot_swap = HotSwapState::Idle;
+            }
+        }
+    }
+
+    async fn handle_handoff_ready(&mut self, envelope: Envelope, router: &RouterHandle) {
+        let from = envelope.from.clone();
+
+        let state = std::mem::replace(&mut self.hot_swap, HotSwapState::Idle);
+        let (new_version, new_binary, old_version) = match state {
+            HotSwapState::WaitingForHandoffReady {
+                new_version,
+                new_binary,
+                old_version,
+                ..
+            } => (new_version, new_binary, old_version),
+            other => {
+                self.hot_swap = other;
+                tracing::warn!(
+                    peer = %from,
+                    "HandoffReady received but not awaiting handoff"
+                );
+                return;
+            }
+        };
+
+        let fd = match envelope.fds.first().cloned() {
+            Some(fd) => fd,
+            None => {
+                tracing::warn!("HandoffReady without fd — aborting hot swap");
+                self.hot_swap = HotSwapState::Idle;
+                return;
+            }
+        };
+
+        let raw = fd.as_raw_fd();
+        unsafe {
+            let flags = libc::fcntl(raw, libc::F_GETFD);
+            if flags >= 0 {
+                let _ = libc::fcntl(raw, libc::F_SETFD, flags & !libc::FD_CLOEXEC);
+            }
+        }
+
+        tracing::info!(
+            version = %new_version,
+            "Listener fd received — spawning new peripheral"
+        );
+
+        match self.spawn_peripheral(&new_binary, &new_version).await {
+            Ok(child) => {
+                self.hot_swap = HotSwapState::WaitingForNewHandshake {
+                    new_version,
+                    old_version,
+                    initiated_at: Instant::now(),
+                    child: Some(child),
+                    listener_fd: Some(fd),
+                };
+            }
+            Err(e) => {
+                tracing::error!("Failed to spawn new peripheral: {}", e);
+                self.hot_swap = HotSwapState::Idle;
+                if let Err(re) = self.version_manager.rollback() {
+                    tracing::error!("Rollback also failed: {}", re);
                 }
+                self.send_audit(
+                    router,
+                    "hot_swap_failed",
+                    None,
+                    serde_json::json!({ "error": e.to_string() }),
+                )
+                .await;
             }
         }
     }
@@ -479,6 +592,7 @@ impl Microkernel {
             msg_type: msg_types::LEASE_ACK.to_string(),
             id: envelope.id.clone(),
             payload: serde_json::to_value(&ack).unwrap_or_default(),
+            fds: Vec::new(),
         };
 
         if let Err(e) = router.send_to(from, response).await {
@@ -516,6 +630,7 @@ impl Microkernel {
                 msg_type: msg_types::UPDATE_REJECTED.to_string(),
                 id: envelope.id,
                 payload: serde_json::to_value(&rejected).unwrap_or_default(),
+                fds: Vec::new(),
             };
             let _ = router.send(response).await;
             return;
@@ -534,6 +649,7 @@ impl Microkernel {
                 msg_type: msg_types::UPDATE_REJECTED.to_string(),
                 id: envelope.id,
                 payload: serde_json::to_value(&rejected).unwrap_or_default(),
+                fds: Vec::new(),
             };
             let _ = router.send(response).await;
             return;
@@ -555,6 +671,7 @@ impl Microkernel {
                     msg_type: msg_types::UPDATE_REJECTED.to_string(),
                     id: envelope.id,
                     payload: serde_json::to_value(&rejected).unwrap_or_default(),
+                    fds: Vec::new(),
                 };
                 let _ = router.send(response).await;
                 return;
@@ -579,6 +696,7 @@ impl Microkernel {
                 msg_type: msg_types::UPDATE_REJECTED.to_string(),
                 id: envelope.id,
                 payload: serde_json::to_value(&rejected).unwrap_or_default(),
+                fds: Vec::new(),
             };
             let _ = router.send(response).await;
             return;
@@ -605,6 +723,7 @@ impl Microkernel {
             msg_type: msg_types::COMPILE_REQUEST.to_string(),
             id: envelope.id,
             payload: serde_json::to_value(&compile_req).unwrap_or_default(),
+            fds: Vec::new(),
         };
 
         if let Err(e) = router.send_to("compiler", compile_envelope).await {
@@ -621,6 +740,7 @@ impl Microkernel {
                 msg_type: msg_types::UPDATE_REJECTED.to_string(),
                 id: String::new(),
                 payload: serde_json::to_value(&rejected).unwrap_or_default(),
+                fds: Vec::new(),
             };
             let _ = router.send(response).await;
         }
@@ -656,6 +776,7 @@ impl Microkernel {
                 msg_type: msg_types::UPDATE_REJECTED.to_string(),
                 id: envelope.id,
                 payload: serde_json::to_value(&rejected).unwrap_or_default(),
+                fds: Vec::new(),
             };
             let _ = router.send_to("peripheral", response).await;
             return;
@@ -702,6 +823,7 @@ impl Microkernel {
             msg_type: msg_types::TEST_REQUEST.to_string(),
             id: envelope.id.clone(),
             payload: serde_json::to_value(&test_req).unwrap_or_default(),
+            fds: Vec::new(),
         };
 
         if let Err(e) = router.send_to("judge", test_envelope).await {
@@ -784,6 +906,7 @@ impl Microkernel {
                     msg_type: msg_types::PROBATION_STARTED.to_string(),
                     id: envelope.id.clone(),
                     payload: serde_json::to_value(&probation_msg).unwrap_or_default(),
+                    fds: Vec::new(),
                 };
                 let _ = router.send_to("peripheral", response).await;
 
@@ -831,6 +954,7 @@ impl Microkernel {
                     msg_type: msg_types::UPDATE_REJECTED.to_string(),
                     id: envelope.id.clone(),
                     payload: serde_json::to_value(&rejected).unwrap_or_default(),
+                    fds: Vec::new(),
                 };
                 let _ = router.send_to("peripheral", response).await;
 
@@ -899,6 +1023,7 @@ impl Microkernel {
                         msg_type: msg_types::UPDATE_REJECTED.to_string(),
                         id: envelope_id.to_string(),
                         payload: serde_json::to_value(&rejected).unwrap_or_default(),
+                        fds: Vec::new(),
                     };
                     let _ = router.send_to("peripheral", response).await;
                     return;
@@ -931,6 +1056,7 @@ impl Microkernel {
                             msg_type: msg_types::UPDATE_REJECTED.to_string(),
                             id: envelope_id.to_string(),
                             payload: serde_json::to_value(&rejected).unwrap_or_default(),
+                            fds: Vec::new(),
                         };
                         let _ = router.send_to("peripheral", response).await;
                         return;
@@ -964,6 +1090,7 @@ impl Microkernel {
                     msg_type: msg_types::UPDATE_REJECTED.to_string(),
                     id: envelope_id.to_string(),
                     payload: serde_json::to_value(&rejected).unwrap_or_default(),
+                    fds: Vec::new(),
                 };
                 let _ = router.send_to("peripheral", response).await;
                 return;
@@ -979,6 +1106,7 @@ impl Microkernel {
             msg_type: msg_types::UPDATE_ACCEPTED.to_string(),
             id: envelope_id.to_string(),
             payload: serde_json::to_value(&accepted).unwrap_or_default(),
+            fds: Vec::new(),
         };
         let _ = router.send_to("peripheral", response).await;
 
@@ -995,23 +1123,21 @@ impl Microkernel {
         if new_binary.exists() {
             tracing::info!(
                 version = %new_version,
-                "Initiating hot swap — sending Shutdown to old peripheral"
+                "Initiating hot swap — sending PrepareHandoff to old peripheral"
             );
 
-            let shutdown = messages::Shutdown {
-                reason: format!("Hot replacement: upgrading to {}", new_version),
-                grace_ms: 5000,
-            };
-            let shutdown_envelope = Envelope {
+            let prepare = messages::PrepareHandoff;
+            let prepare_envelope = Envelope {
                 from: "boot".to_string(),
                 to: "peripheral".to_string(),
-                msg_type: msg_types::SHUTDOWN.to_string(),
+                msg_type: msg_types::PREPARE_HANDOFF.to_string(),
                 id: String::new(),
-                payload: serde_json::to_value(&shutdown).unwrap_or_default(),
+                payload: serde_json::to_value(&prepare).unwrap_or_default(),
+                fds: Vec::new(),
             };
-            let _ = router.send_to("peripheral", shutdown_envelope).await;
+            let _ = router.send_to("peripheral", prepare_envelope).await;
 
-            self.hot_swap = HotSwapState::WaitingForOldDisconnect {
+            self.hot_swap = HotSwapState::WaitingForHandoffReady {
                 new_version: new_version.to_string(),
                 new_binary,
                 old_version,
@@ -1053,6 +1179,7 @@ impl Microkernel {
             msg_type: msg_types::TEST_REQUEST.to_string(),
             id: format!("probation-reeval-{}", envelope_id),
             payload: serde_json::to_value(&test_req).unwrap_or_default(),
+            fds: Vec::new(),
         };
 
         self.lease_manager.set_probation("peripheral", false);
@@ -1072,6 +1199,7 @@ impl Microkernel {
                 msg_type: msg_types::PROBATION_ENDED.to_string(),
                 id: envelope_id,
                 payload: serde_json::to_value(&probation_msg).unwrap_or_default(),
+                fds: Vec::new(),
             };
             let _ = router.send_to("peripheral", response).await;
 
@@ -1113,6 +1241,7 @@ impl Microkernel {
             msg_type: msg_types::AUDIT_LOG.to_string(),
             id: String::new(),
             payload: serde_json::to_value(&audit).unwrap_or_default(),
+            fds: Vec::new(),
         };
 
         if let Err(e) = router.send_to("audit", envelope).await {
@@ -1148,6 +1277,7 @@ impl Microkernel {
             msg_type: msg_types::GET_STATE_RESPONSE.to_string(),
             id: envelope.id,
             payload: serde_json::to_value(&resp).unwrap_or_default(),
+            fds: Vec::new(),
         };
 
         if let Err(e) = router.send_to(&from, response).await {
@@ -1182,6 +1312,7 @@ impl Microkernel {
             msg_type: msg_types::SET_STATE_ACK.to_string(),
             id: envelope.id,
             payload: serde_json::to_value(&ack).unwrap_or_default(),
+            fds: Vec::new(),
         };
 
         if let Err(e) = router.send_to(&from, response).await {
@@ -1206,7 +1337,11 @@ impl Microkernel {
                 }
                 LeaseStatus::Dead => {
                     let during_hot_swap = identity == "peripheral"
-                        && matches!(self.hot_swap, HotSwapState::WaitingForOldDisconnect { .. });
+                        && (matches!(self.hot_swap, HotSwapState::WaitingForOldDisconnect { .. })
+                            || matches!(
+                                self.hot_swap,
+                                HotSwapState::WaitingForHandoffReady { .. }
+                            ));
 
                     tracing::error!(peer = %identity, during_hot_swap, "Peer declared dead (lease expired)");
                     router.remove_peer(&identity).await;
@@ -1263,6 +1398,7 @@ impl Microkernel {
                     old_version,
                     initiated_at: Instant::now(),
                     child: Some(child),
+                    listener_fd: None,
                 };
             }
             Err(e) => {
@@ -1325,6 +1461,12 @@ impl Microkernel {
     async fn check_hot_swap(&mut self, router: &RouterHandle) {
         match &self.hot_swap {
             HotSwapState::Idle => {}
+            HotSwapState::WaitingForHandoffReady { initiated_at, .. } => {
+                if initiated_at.elapsed() > Duration::from_secs(15) {
+                    tracing::warn!("HandoffReady not received within timeout — aborting");
+                    self.hot_swap = HotSwapState::Idle;
+                }
+            }
             HotSwapState::WaitingForOldDisconnect { initiated_at, .. } => {
                 if initiated_at.elapsed() > Duration::from_secs(15) {
                     tracing::warn!(
@@ -1340,6 +1482,7 @@ impl Microkernel {
                 new_version,
                 old_version,
                 initiated_at,
+                listener_fd,
                 ..
             } => {
                 if initiated_at.elapsed() > Duration::from_secs(HOT_SWAP_HANDSHAKE_TIMEOUT_SECS) {
@@ -1352,8 +1495,12 @@ impl Microkernel {
 
                     // Extract and kill the child from WaitingForNewHandshake state
                     let old_state = std::mem::replace(&mut self.hot_swap, HotSwapState::Idle);
-                    if let HotSwapState::WaitingForNewHandshake { child, .. } = old_state {
+                    if let HotSwapState::WaitingForNewHandshake {
+                        child, listener_fd, ..
+                    } = old_state
+                    {
                         self.peripheral_child = child;
+                        drop(listener_fd);
                     }
                     self.kill_peripheral_process().await;
 
@@ -1417,6 +1564,7 @@ impl Microkernel {
                     msg_type: msg_types::RUNLEVEL_REQUEST_RESULT.to_string(),
                     id: envelope.id,
                     payload: serde_json::to_value(&result).unwrap_or_default(),
+                    fds: Vec::new(),
                 };
                 let _ = router.send(response).await;
                 return;
@@ -1450,6 +1598,7 @@ impl Microkernel {
             msg_type: msg_types::RUNLEVEL_REQUEST_RESULT.to_string(),
             id: envelope.id,
             payload: serde_json::to_value(&result).unwrap_or_default(),
+            fds: Vec::new(),
         };
         let _ = router.send(response).await;
 
@@ -1533,6 +1682,7 @@ impl Microkernel {
             msg_type: msg_types::RUNLEVEL_CHANGE.to_string(),
             id: String::new(),
             payload: serde_json::to_value(&change).unwrap_or_default(),
+            fds: Vec::new(),
         };
 
         router.broadcast(envelope).await;
@@ -1552,6 +1702,7 @@ impl Microkernel {
             msg_type: msg_types::SHUTDOWN.to_string(),
             id: String::new(),
             payload: serde_json::to_value(&shutdown).unwrap_or_default(),
+            fds: Vec::new(),
         };
 
         router.broadcast(envelope).await;
@@ -1645,6 +1796,7 @@ impl Microkernel {
             msg_type: msg_types::CONSTITUTION_AMENDMENT_RESULT.to_string(),
             id: envelope.id,
             payload: serde_json::to_value(&response_payload).unwrap_or_default(),
+            fds: Vec::new(),
         };
 
         if let Err(e) = router.send_to(&from, response).await {
@@ -1725,6 +1877,7 @@ impl Microkernel {
             msg_type: msg_types::PROTOCOL_EXTENSION_RESULT.to_string(),
             id: envelope.id,
             payload: serde_json::to_value(&response_payload).unwrap_or_default(),
+            fds: Vec::new(),
         };
 
         if let Err(e) = router.send_to(&from, response).await {
@@ -1768,6 +1921,7 @@ impl Microkernel {
             msg_type: msg_types::ADMIN_STATUS_RESPONSE.to_string(),
             id: envelope.id,
             payload: serde_json::to_value(&resp).unwrap_or_default(),
+            fds: Vec::new(),
         };
         if let Err(e) = router.send_to(&from, response).await {
             tracing::warn!(peer = %from, "Failed to send AdminStatusResponse: {}", e);
@@ -1797,6 +1951,7 @@ impl Microkernel {
             msg_type: msg_types::ADMIN_LIST_VERSIONS_RESPONSE.to_string(),
             id: envelope.id,
             payload: serde_json::to_value(&resp).unwrap_or_default(),
+            fds: Vec::new(),
         };
         if let Err(e) = router.send_to(&from, response).await {
             tracing::warn!(peer = %from, "Failed to send AdminListVersionsResponse: {}", e);
@@ -1834,6 +1989,7 @@ impl Microkernel {
             msg_type: msg_types::ADMIN_VERSION_DETAIL_RESPONSE.to_string(),
             id: envelope.id,
             payload: serde_json::to_value(&resp).unwrap_or_default(),
+            fds: Vec::new(),
         };
         if let Err(e) = router.send_to(&from, response).await {
             tracing::warn!(peer = %from, "Failed to send AdminVersionDetailResponse: {}", e);
@@ -1863,6 +2019,7 @@ impl Microkernel {
             msg_type: msg_types::ADMIN_CLEANUP_VERSIONS_RESPONSE.to_string(),
             id: envelope.id,
             payload: serde_json::to_value(&resp).unwrap_or_default(),
+            fds: Vec::new(),
         };
         if let Err(e) = router.send_to(&from, response).await {
             tracing::warn!(peer = %from, "Failed to send AdminCleanupVersionsResponse: {}", e);
@@ -1918,6 +2075,7 @@ impl Microkernel {
             msg_type: msg_types::ADMIN_FORCE_ROLLBACK_RESPONSE.to_string(),
             id: envelope.id,
             payload: serde_json::to_value(&resp).unwrap_or_default(),
+            fds: Vec::new(),
         };
         if let Err(e) = router.send_to(&from, response).await {
             tracing::warn!(peer = %from, "Failed to send AdminForceRollbackResponse: {}", e);
@@ -1946,6 +2104,7 @@ impl Microkernel {
             msg_type: msg_types::ADMIN_LEASE_STATUS_RESPONSE.to_string(),
             id: envelope.id,
             payload: serde_json::to_value(&resp).unwrap_or_default(),
+            fds: Vec::new(),
         };
         if let Err(e) = router.send_to(&from, response).await {
             tracing::warn!(peer = %from, "Failed to send AdminLeaseStatusResponse: {}", e);
@@ -1974,6 +2133,7 @@ impl Microkernel {
             msg_type: msg_types::ADMIN_UNLOCK_VERSION_RESPONSE.to_string(),
             id: envelope.id,
             payload: serde_json::to_value(&resp).unwrap_or_default(),
+            fds: Vec::new(),
         };
         if let Err(e) = router.send_to(&from, response).await {
             tracing::warn!(peer = %from, "Failed to send AdminUnlockVersionResponse: {}", e);
@@ -1994,6 +2154,7 @@ impl Microkernel {
             msg_type: msg_types::ADMIN_AUDIT_QUERY_RESPONSE.to_string(),
             id: envelope.id,
             payload: serde_json::to_value(&resp).unwrap_or_default(),
+            fds: Vec::new(),
         };
         if let Err(e) = router.send_to(&from, response).await {
             tracing::warn!(peer = %from, "Failed to send AdminAuditQueryResponse: {}", e);

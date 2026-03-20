@@ -17,6 +17,7 @@ hmac = { workspace = true }
 sha2 = { workspace = true }
 hex = { workspace = true }
 reloopy-ipc = { workspace = true }
+libc = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3"

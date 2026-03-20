@@ -311,8 +311,9 @@ pub fn execute_tool(
 
             if offset.is_some() || limit.is_some() {
                 if start.is_some() || end.is_some() {
-                    return Err("Use either offset/limit or start_line/end_line, not both."
-                        .to_string());
+                    return Err(
+                        "Use either offset/limit or start_line/end_line, not both.".to_string()
+                    );
                 }
                 let offset = offset.unwrap_or(0);
                 let limit = limit
@@ -653,9 +654,7 @@ mod tests {
     #[test]
     fn edit_source_file_rejects_ambiguous_match() {
         let (_dir, mut source, mut memory) = temp_tools();
-        source
-            .write_file("src/lib.rs", "foo\nbar\nfoo\n")
-            .unwrap();
+        source.write_file("src/lib.rs", "foo\nbar\nfoo\n").unwrap();
 
         let result = execute_tool(
             "edit_source_file",
