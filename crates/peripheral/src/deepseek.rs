@@ -218,9 +218,8 @@ impl DeepSeekClient {
 
         let mut full_content = String::new();
         let mut full_reasoning = String::new();
-        let mut tool_calls: Vec<ToolCall> = Vec::new();
-        let mut current_tool_args: std::collections::HashMap<usize, String> =
-            std::collections::HashMap::new();
+        let mut pending_tool_calls: std::collections::BTreeMap<usize, ToolCall> =
+            std::collections::BTreeMap::new();
 
         use tokio_stream::StreamExt;
         let mut byte_stream = std::pin::pin!(response.bytes_stream());
@@ -276,15 +275,20 @@ impl DeepSeekClient {
                                     .as_ref()
                                     .and_then(|f| f.name.clone())
                                     .unwrap_or_default();
-                                tool_calls.push(ToolCall {
-                                    id: id.clone(),
-                                    type_: tc.type_.clone().unwrap_or_else(|| "function".into()),
-                                    function: FunctionCall {
-                                        name: name.clone(),
-                                        arguments: String::new(),
+                                pending_tool_calls.insert(
+                                    idx,
+                                    ToolCall {
+                                        id: id.clone(),
+                                        type_: tc
+                                            .type_
+                                            .clone()
+                                            .unwrap_or_else(|| "function".into()),
+                                        function: FunctionCall {
+                                            name: name.clone(),
+                                            arguments: String::new(),
+                                        },
                                     },
-                                });
-                                current_tool_args.insert(idx, String::new());
+                                );
                                 let _ = event_tx
                                     .send(StreamEvent::ToolCallStart {
                                         id: id.clone(),
@@ -295,8 +299,10 @@ impl DeepSeekClient {
 
                             if let Some(ref f) = tc.function {
                                 if let Some(ref args) = f.arguments {
-                                    if let Some(buf) = current_tool_args.get_mut(&idx) {
-                                        buf.push_str(args);
+                                    if let Some(tc_ref) =
+                                        pending_tool_calls.get_mut(&idx)
+                                    {
+                                        tc_ref.function.arguments.push_str(args);
                                     }
                                     let _ = event_tx
                                         .send(StreamEvent::ToolCallArgDelta(args.clone()))
@@ -309,11 +315,7 @@ impl DeepSeekClient {
             }
         }
 
-        for (idx, args) in &current_tool_args {
-            if let Some(tc) = tool_calls.get_mut(*idx) {
-                tc.function.arguments = args.clone();
-            }
-        }
+        let tool_calls: Vec<ToolCall> = pending_tool_calls.into_values().collect();
 
         let _ = event_tx.send(StreamEvent::Done).await;
 
