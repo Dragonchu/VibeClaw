@@ -1,0 +1,7 @@
+[2m2026-03-18T05:30:49.155063Z[0m [32m INFO[0m [2mloopy_boot[0m[2m:[0m loopy-boot microkernel starting
+[2m2026-03-18T05:30:49.155311Z[0m [32m INFO[0m [2mloopy_boot::state[0m[2m:[0m State loaded [3mkeys[0m[2m=[0m0
+[2m2026-03-18T05:30:49.155347Z[0m [32m INFO[0m [2mloopy_boot::microkernel[0m[2m:[0m Boot microkernel ready [3mbase_dir[0m[2m=[0m/home/codespace/.loopy [3msock[0m[2m=[0m/home/codespace/.loopy/loopy.sock [3mrunlevel[0m[2m=[0mNormal [3mcurrent_version[0m[2m=[0mNone
+[2m2026-03-18T05:30:49.155471Z[0m [32m INFO[0m [2mloopy_boot::ipc[0m[2m:[0m IPC router listening [3mpath[0m[2m=[0m/home/codespace/.loopy/loopy.sock
+[2m2026-03-18T05:30:50.157647Z[0m [32m INFO[0m [2mloopy_boot::ipc[0m[2m:[0m New peer connected [3mpeer[0m[2m=[0mcompiler
+[2m2026-03-18T05:30:50.157744Z[0m [32m INFO[0m [2mloopy_boot::microkernel[0m[2m:[0m Hello received [3mpeer[0m[2m=[0mcompiler [3mprotocol_version[0m[2m=[0m1.0
+[2m2026-03-18T05:30:50.157818Z[0m [32m INFO[0m [2mloopy_boot::microkernel[0m[2m:[0m Handshake complete [3mpeer[0m[2m=[0mcompiler

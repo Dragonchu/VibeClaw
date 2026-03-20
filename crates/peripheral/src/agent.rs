@@ -368,6 +368,7 @@ mod tests {
                 "errors": "error[E0308]: mismatched types",
                 "suggestion": "Check the return type"
             }),
+            fds: Vec::new(),
         };
         let result = format_update_result(&envelope);
         assert!(result.contains("REJECTED"));

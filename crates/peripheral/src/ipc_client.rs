@@ -66,7 +66,11 @@ pub async fn connect_and_handshake(
     let (outgoing_tx, mut outgoing_rx) = mpsc::channel::<Envelope>(64);
     let (incoming_tx, incoming_rx) = mpsc::channel::<Envelope>(64);
 
-    let write_stream = stream.try_clone()?;
+    // Wrap in Arc so both reader and writer tasks can share the full stream
+    // (needed for SCM_RIGHTS FD passing; split halves lose that capability).
+    let stream = Arc::new(stream);
+
+    let write_stream = Arc::clone(&stream);
     tokio::spawn(async move {
         while let Some(envelope) = outgoing_rx.recv().await {
             if let Err(e) = wire::write_envelope_with_fds(&write_stream, &envelope).await {

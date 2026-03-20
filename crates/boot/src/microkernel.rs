@@ -1482,7 +1482,7 @@ impl Microkernel {
                 new_version,
                 old_version,
                 initiated_at,
-                listener_fd,
+                listener_fd: _,
                 ..
             } => {
                 if initiated_at.elapsed() > Duration::from_secs(HOT_SWAP_HANDSHAKE_TIMEOUT_SECS) {
@@ -1725,6 +1725,7 @@ impl Microkernel {
                 error: None,
             })
             .unwrap_or_default(),
+            fds: Vec::new(),
         };
         let _ = router.send(response).await;
 

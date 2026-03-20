@@ -41,6 +41,7 @@ impl AdminClient {
                 protocol_version: "1.0".to_string(),
                 capabilities: serde_json::json!(["admin"]),
             })?,
+            fds: Vec::new(),
         };
 
         wire::write_envelope(&mut self.writer, &hello).await?;
@@ -65,6 +66,7 @@ impl AdminClient {
             msg_type: msg_type.to_string(),
             id: id.clone(),
             payload,
+            fds: Vec::new(),
         };
 
         wire::write_envelope(&mut self.writer, &envelope).await?;

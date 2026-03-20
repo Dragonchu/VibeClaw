@@ -210,7 +210,6 @@ async fn handle_test_request(
                 dimension_scores: vec![],
                 overall_score: 0.0,
                 suggestion: Some(format!("Invalid TestRequest payload: {}", e)),
-                fds: Vec::new(),
             };
         }
     };

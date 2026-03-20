@@ -180,7 +180,6 @@ async fn handle_compile_request(envelope: &Envelope) -> CompileResult {
                 success: false,
                 binary_path: None,
                 errors: Some(format!("Invalid CompileRequest payload: {}", e)),
-                fds: Vec::new(),
             };
         }
     };

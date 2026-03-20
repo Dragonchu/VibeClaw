@@ -14,6 +14,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::{mpsc, oneshot};
@@ -288,13 +289,13 @@ async fn handle_connection(
     boot_tx: mpsc::Sender<Envelope>,
     handle: RouterHandle,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    // Keep separate clones for reader and writer so we can pass file descriptors
-    // using SCM_RIGHTS via the full stream (splitting loses that capability).
-    let mut read_stream = stream.try_clone()?;
-    let write_stream = stream;
+    // Wrap the stream in an Arc so both reader and writer tasks can share it.
+    // tokio::net::UnixStream supports concurrent read/write from different
+    // tasks, and using the full (unsplit) stream preserves SCM_RIGHTS support.
+    let stream = Arc::new(stream);
 
     // Wait for the first message to identify the peer
-    let first_envelope = wire::read_envelope_with_fds(&read_stream).await?;
+    let first_envelope = wire::read_envelope_with_fds(&stream).await?;
     let identity = first_envelope.from.clone();
 
     tracing::info!(peer = %identity, "New peer connected");
@@ -312,10 +313,10 @@ async fn handle_connection(
 
     // Writer task: take messages from the channel and write to the socket
     let identity_for_writer = identity.clone();
+    let write_stream = Arc::clone(&stream);
     let writer_handle = tokio::spawn(async move {
-        let writer = write_stream;
         while let Some(msg) = rx.recv().await {
-            if let Err(e) = wire::write_envelope_with_fds(&writer, &msg).await {
+            if let Err(e) = wire::write_envelope_with_fds(&write_stream, &msg).await {
                 tracing::warn!(peer = %identity_for_writer, "Write error: {}", e);
                 break;
             }
@@ -325,12 +326,12 @@ async fn handle_connection(
     // Reader task: read messages from the socket and route them
     let identity_for_reader = identity.clone();
     let handle_for_reader = handle.clone();
+    let read_stream = stream;
     let reader_handle = tokio::spawn(async move {
-        let mut reader = read_stream;
         let identity = identity_for_reader;
         let handle = handle_for_reader;
         loop {
-            match wire::read_envelope_with_fds(&reader).await {
+            match wire::read_envelope_with_fds(&read_stream).await {
                 Ok(envelope) => {
                     let dest = envelope.to.clone();
 

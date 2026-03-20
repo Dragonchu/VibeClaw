@@ -1,0 +1,4 @@
+[2m2026-03-18T05:30:50.157441Z[0m [32m INFO[0m [2mloopy_compiler[0m[2m:[0m loopy-compiler service starting
+[2m2026-03-18T05:30:50.157498Z[0m [32m INFO[0m [2mloopy_compiler[0m[2m:[0m Connecting to Boot [3msock[0m[2m=[0m/home/codespace/.loopy/loopy.sock
+[2m2026-03-18T05:30:50.157606Z[0m [32m INFO[0m [2mloopy_compiler[0m[2m:[0m Hello sent, waiting for Welcome...
+[2m2026-03-18T05:30:50.157931Z[0m [32m INFO[0m [2mloopy_compiler[0m[2m:[0m Handshake complete — connected to Boot [3mrunlevel[0m[2m=[0m2

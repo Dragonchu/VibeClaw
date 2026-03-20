@@ -194,81 +194,8 @@ async fn run(
     let (update_result_tx, update_result_rx) = mpsc::channel::<Envelope>(4);
     let shutdown_notify = Arc::new(tokio::sync::Notify::new());
 
-    let shutdown_for_ipc = shutdown_notify.clone();
-    let message_tx = update_result_tx.clone();
-    let mut ipc_rx = ipc.rx;
-    let ipc_tx_for_ipc = ipc_tx.clone();
-    let listener_for_ipc = std_listener.clone();
-    tokio::spawn(async move {
-        while let Some(envelope) = ipc_rx.recv().await {
-            match envelope.msg_type.as_str() {
-                msg_types::LEASE_ACK => {
-                    tracing::trace!("LeaseAck received");
-                }
-                msg_types::SHUTDOWN => {
-                    let reason = envelope
-                        .payload
-                        .get("reason")
-                        .and_then(|v: &serde_json::Value| v.as_str())
-                        .unwrap_or("unknown");
-                    tracing::info!(%reason, "Shutdown received");
-                    let _ = message_tx.send(envelope).await;
-                    shutdown_for_ipc.notify_waiters();
-                    break;
-                }
-                msg_types::RUNLEVEL_CHANGE => {
-                    tracing::info!("Runlevel change: {}", envelope.payload);
-                }
-                msg_types::PREPARE_HANDOFF => {
-                    tracing::info!("PrepareHandoff received — sending listener fd");
-                    #[cfg(unix)]
-                    {
-                        use std::os::unix::io::IntoRawFd;
-
-                        let duplicate = match listener_for_ipc.try_clone() {
-                            Ok(l) => l,
-                            Err(e) => {
-                                tracing::error!("Failed to clone listener for handoff: {}", e);
-                                continue;
-                            }
-                        };
-                        let fd = duplicate.into_raw_fd();
-                        unsafe {
-                            let flags = libc::fcntl(fd, libc::F_GETFD);
-                            if flags >= 0 {
-                                let _ = libc::fcntl(fd, libc::F_SETFD, flags & !libc::FD_CLOEXEC);
-                            }
-                        }
-                        let handoff = Envelope {
-                            from: "peripheral".to_string(),
-                            to: "boot".to_string(),
-                            msg_type: msg_types::HANDOFF_READY.to_string(),
-                            id: ipc_client::new_msg_id(),
-                            payload: serde_json::to_value(&messages::HandoffReady)
-                                .unwrap_or_default(),
-                            fds: vec![Arc::new(unsafe { OwnedFd::from_raw_fd(fd) })],
-                        };
-                        let _ = ipc_tx_for_ipc.send(handoff).await;
-                    }
-                }
-                msg_types::UPDATE_ACCEPTED | msg_types::UPDATE_REJECTED => {
-                    let _ = message_tx.send(envelope).await;
-                }
-                other => {
-                    tracing::debug!(msg_type = %other, "Unhandled message");
-                }
-            }
-        }
-    });
-
-    let agent = Agent::new(deepseek, source, memory, ipc_tx, update_result_rx);
-
-    let app_state = Arc::new(AppState {
-        agent: Mutex::new(agent),
-    });
-
-    let router = web::build_router(app_state);
-
+    // Create the HTTP listener early so the IPC handler can reference it for
+    // the hot-swap handoff (PrepareHandoff → HandoffReady FD passing).
     let std_listener = if let Some(fd) = inherited_listener {
         #[cfg(unix)]
         {
@@ -313,7 +240,86 @@ async fn run(
 
     let std_listener = Arc::new(std_listener);
 
-    let listener = match TcpListener::from_std(std_listener.try_clone().unwrap()) {
+    let shutdown_for_ipc = shutdown_notify.clone();
+    let message_tx = update_result_tx.clone();
+    let mut ipc_rx = ipc.rx;
+    let ipc_tx_for_ipc = ipc_tx.clone();
+    let listener_for_ipc = std_listener.clone();
+    tokio::spawn(async move {
+        while let Some(envelope) = ipc_rx.recv().await {
+            match envelope.msg_type.as_str() {
+                msg_types::LEASE_ACK => {
+                    tracing::trace!("LeaseAck received");
+                }
+                msg_types::SHUTDOWN => {
+                    let reason = envelope
+                        .payload
+                        .get("reason")
+                        .and_then(|v: &serde_json::Value| v.as_str())
+                        .unwrap_or("unknown");
+                    tracing::info!(%reason, "Shutdown received");
+                    let _ = message_tx.send(envelope).await;
+                    shutdown_for_ipc.notify_waiters();
+                    break;
+                }
+                msg_types::RUNLEVEL_CHANGE => {
+                    tracing::info!("Runlevel change: {}", envelope.payload);
+                }
+                msg_types::PREPARE_HANDOFF => {
+                    tracing::info!("PrepareHandoff received — sending listener fd");
+                    #[cfg(unix)]
+                    {
+                        use std::os::unix::io::{FromRawFd, IntoRawFd, OwnedFd};
+
+                        let duplicate: std::net::TcpListener =
+                            match listener_for_ipc.try_clone() {
+                                Ok(l) => l,
+                                Err(e) => {
+                                    tracing::error!(
+                                        "Failed to clone listener for handoff: {}",
+                                        e
+                                    );
+                                    continue;
+                                }
+                            };
+                        let fd = duplicate.into_raw_fd();
+                        unsafe {
+                            let flags = libc::fcntl(fd, libc::F_GETFD);
+                            if flags >= 0 {
+                                let _ = libc::fcntl(fd, libc::F_SETFD, flags & !libc::FD_CLOEXEC);
+                            }
+                        }
+                        let handoff = Envelope {
+                            from: "peripheral".to_string(),
+                            to: "boot".to_string(),
+                            msg_type: msg_types::HANDOFF_READY.to_string(),
+                            id: ipc_client::new_msg_id(),
+                            payload: serde_json::to_value(&messages::HandoffReady)
+                                .unwrap_or_default(),
+                            fds: vec![Arc::new(unsafe { OwnedFd::from_raw_fd(fd) })],
+                        };
+                        let _ = ipc_tx_for_ipc.send(handoff).await;
+                    }
+                }
+                msg_types::UPDATE_ACCEPTED | msg_types::UPDATE_REJECTED => {
+                    let _ = message_tx.send(envelope).await;
+                }
+                other => {
+                    tracing::debug!(msg_type = %other, "Unhandled message");
+                }
+            }
+        }
+    });
+
+    let agent = Agent::new(deepseek, source, memory, ipc_tx, update_result_rx);
+
+    let app_state = Arc::new(AppState {
+        agent: Mutex::new(agent),
+    });
+
+    let router = web::build_router(app_state);
+
+    let listener = match TcpListener::from_std((*std_listener).try_clone().unwrap()) {
         Ok(l) => l,
         Err(e) => {
             tracing::error!("Failed to adopt listener: {}", e);
