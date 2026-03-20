@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::{fmt::Write, time::Duration};
 
 use tokio::sync::mpsc;
 
@@ -8,14 +8,18 @@ use crate::memory::MemoryManager;
 use crate::source::SourceManager;
 use crate::tools::{self, ToolResult};
 
-use reloopy_ipc::messages::{msg_types, Envelope};
+use reloopy_ipc::messages::{Envelope, msg_types};
+
+const TOOL_TRUNCATE_LINES: usize = 120;
 
 const BASE_SYSTEM_PROMPT: &str = r#"You are Reloopy, a self-evolving AI agent written in Rust. You can read and modify your own source code to improve yourself.
 
 ## Source Code Tools
-- read_source_file(path): Read a file from your source code. Path is relative to the peripheral crate root (e.g. "src/main.rs", "Cargo.toml")
-- list_source_files(path): List files in your source directory. Path is relative to the peripheral crate root (e.g. "src/", ".")
-- write_source_file(path, content): Write changes directly to a file in your working directory. Path is relative to crates/peripheral/ (e.g. "src/main.rs"). Provide the FULL file content.
+- read_source_file(path, offset?, limit?, start_line?, end_line?): Read a file or a 1-based inclusive line range. Prefer offset+limit to page large files. Paths are relative to the peripheral crate root (e.g. "src/main.rs", "Cargo.toml").
+- search_source(query, path?="."): Search source files using a .gitignore-aware walker. Supports regex. Returns "path:line: snippet" matches.
+- list_source_files(path): List files in your source directory. Path is relative to the peripheral crate root (e.g. "src/", ".").
+- write_source_file(path, content, start_line?, end_line?): Write changes directly to a file in your working directory. Provide the replacement text for the targeted range or entire file. Use line ranges for precise edits or set start_line=end_line=current_line_count+1 to append.
+- edit_source_file(path, old_string, new_string): Precisely replace a single matching string in a file. Fails if the match is missing or ambiguous.
 - submit_update(): Submit the current working directory for compilation and deployment. This tool returns the build/test result. If compilation fails, read the error messages, fix the code with write_source_file, and call submit_update() again.
 
 ## Memory Tools
@@ -27,6 +31,8 @@ const BASE_SYSTEM_PROMPT: &str = r#"You are Reloopy, a self-evolving AI agent wr
 
 ## Guidelines
 - Always read the relevant source files before making changes
+- Use search_source and line ranges to keep context focused
+- Tool outputs are line-truncated for previews and include total line counts; keep requests concise and rely on targeted reads/diffs
 - Ensure your changes produce valid, compilable Rust code
 - Maintain IPC protocol compatibility (handshake, heartbeat, message handling)
 - Make focused, incremental changes
@@ -147,7 +153,7 @@ impl Agent {
                             let _ = event_tx
                                 .send(AgentEvent::ToolResult {
                                     name: tc.function.name.clone(),
-                                    output: truncate(&output, 500),
+                                    output: truncate_lines(&output, TOOL_TRUNCATE_LINES),
                                 })
                                 .await;
                             self.conversation.push(ChatMessage::tool(&output, &tc.id));
@@ -165,7 +171,7 @@ impl Agent {
                             let _ = event_tx
                                 .send(AgentEvent::ToolResult {
                                     name: "submit_update".to_string(),
-                                    output: truncate(&result_text, 500),
+                                    output: truncate_lines(&result_text, TOOL_TRUNCATE_LINES),
                                 })
                                 .await;
                             self.conversation
@@ -198,12 +204,7 @@ impl Agent {
             return "Error: Lost connection to Boot".to_string();
         }
 
-        match tokio::time::timeout(
-            Duration::from_secs(300),
-            self.update_result_rx.recv(),
-        )
-        .await
-        {
+        match tokio::time::timeout(Duration::from_secs(300), self.update_result_rx.recv()).await {
             Ok(Some(envelope)) => {
                 let result_text = format_update_result(&envelope);
 
@@ -239,7 +240,10 @@ fn format_update_result(envelope: &Envelope) -> String {
                 .get("version")
                 .and_then(|v| v.as_str())
                 .unwrap_or("unknown");
-            format!("Update ACCEPTED — version {} deployed successfully.", version)
+            format!(
+                "Update ACCEPTED — version {} deployed successfully.",
+                version
+            )
         }
         msg_types::UPDATE_REJECTED => {
             let reason = envelope
@@ -271,13 +275,24 @@ fn format_update_result(envelope: &Envelope) -> String {
     }
 }
 
-fn truncate(s: &str, max_bytes: usize) -> String {
-    if s.len() <= max_bytes {
-        s.to_string()
-    } else {
-        let end = s.floor_char_boundary(max_bytes);
-        format!("{}...(truncated)", &s[..end])
+fn truncate_lines(s: &str, max_lines: usize) -> String {
+    let lines: Vec<&str> = s.lines().collect();
+    let total = lines.len();
+    if total <= max_lines {
+        return s.to_string();
     }
+
+    let mut out = String::new();
+    for line in lines.iter().take(max_lines) {
+        out.push_str(line);
+        out.push('\n');
+    }
+    let _ = write!(
+        out,
+        "... (truncated; showing first {} of {} lines)",
+        max_lines, total
+    );
+    out
 }
 
 #[cfg(test)]
@@ -286,34 +301,43 @@ mod tests {
 
     #[test]
     fn truncate_short_string_unchanged() {
-        assert_eq!(truncate("hello", 500), "hello");
+        assert_eq!(truncate_lines("hello", 500), "hello");
     }
 
     #[test]
     fn truncate_ascii_at_boundary() {
-        let s = "a".repeat(600);
-        let result = truncate(&s, 500);
-        assert!(result.starts_with(&"a".repeat(500)));
-        assert!(result.ends_with("...(truncated)"));
+        let s = "a\n".repeat(10);
+        let result = truncate_lines(&s, 3);
+        assert!(
+            result.contains("truncated; showing first 3 of 10 lines"),
+            "unexpected output: {}",
+            result
+        );
     }
 
     #[test]
     fn truncate_multibyte_utf8_does_not_panic() {
         // "代理" is 2 chars, each 3 bytes in UTF-8; repeated 100 times = 200 chars, 600 bytes.
         // Truncates at a valid UTF-8 boundary when byte limit falls mid-character.
-        let s: String = "代理".repeat(100);
-        let result = truncate(&s, 500);
-        assert!(result.ends_with("...(truncated)"));
-        assert!(result.len() < 600);
+        let s: String = "代理\n".repeat(20);
+        let result = truncate_lines(&s, 10);
+        assert!(
+            result.contains("truncated; showing first 10 of 20 lines"),
+            "unexpected output: {}",
+            result
+        );
     }
 
     #[test]
     fn truncate_mixed_content() {
-        // Mix of ASCII and multi-byte characters
-        let s = format!("{}{}", "a".repeat(498), "代理代理");
-        let result = truncate(&s, 500);
-        // Should truncate safely, including 498 ASCII bytes + up to boundary
-        assert!(result.ends_with("...(truncated)"));
+        // Mix of ASCII and multi-byte characters over multiple lines
+        let s = format!("line1 {}\nline2 {}\nline3", "a".repeat(10), "代理代理");
+        let result = truncate_lines(&s, 2);
+        assert!(
+            result.contains("truncated; showing first 2 of 3 lines"),
+            "unexpected truncation output: {}",
+            result
+        );
     }
 
     #[test]

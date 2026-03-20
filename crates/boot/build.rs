@@ -31,9 +31,6 @@ fn main() {
         .canonicalize()
         .expect("crates/ipc must exist at build time");
 
-    println!(
-        "cargo:rustc-env=RELOOPY_SEED_IPC={}",
-        seed_ipc.display()
-    );
+    println!("cargo:rustc-env=RELOOPY_SEED_IPC={}", seed_ipc.display());
     println!("cargo:rerun-if-changed={}", seed_ipc.display());
 }

@@ -109,7 +109,11 @@ impl ProtocolManager {
             ("RunlevelRequest", "runlevel", "peer->boot"),
             ("RunlevelRequestResult", "runlevel", "boot->peer"),
             ("CapabilityEscalation", "security", "boot->audit"),
-            ("ConstitutionAmendmentProposal", "constitution", "peer->boot"),
+            (
+                "ConstitutionAmendmentProposal",
+                "constitution",
+                "peer->boot",
+            ),
             ("ConstitutionAmendmentResult", "constitution", "boot->peer"),
             ("ProtocolExtensionProposal", "protocol", "peer->boot"),
             ("ProtocolExtensionResult", "protocol", "boot->peer"),
@@ -149,7 +153,8 @@ impl ProtocolManager {
         signature_verifier: Option<&dyn Fn(&str, &str) -> bool>,
         signature: Option<&str>,
     ) -> Result<String, String> {
-        let proposed = new_messages.as_object()
+        let proposed = new_messages
+            .as_object()
             .ok_or("new_messages must be a JSON object")?;
 
         if proposed.is_empty() {
@@ -263,8 +268,7 @@ impl ProtocolManager {
         let path = self.protocol_dir.join(MESSAGES_FILE);
         let content = serde_json::to_string_pretty(&self.registry)
             .map_err(|e| format!("Failed to serialize registry: {}", e))?;
-        fs::write(&path, content)
-            .map_err(|e| format!("Failed to write registry: {}", e))?;
+        fs::write(&path, content).map_err(|e| format!("Failed to write registry: {}", e))?;
         Ok(())
     }
 
@@ -279,8 +283,7 @@ impl ProtocolManager {
             .open(&log_path)
             .map_err(|e| format!("Failed to open extensions.log: {}", e))?;
 
-        writeln!(file, "{}", line)
-            .map_err(|e| format!("Failed to write extensions.log: {}", e))?;
+        writeln!(file, "{}", line).map_err(|e| format!("Failed to write extensions.log: {}", e))?;
 
         Ok(())
     }

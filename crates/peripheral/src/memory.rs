@@ -52,7 +52,10 @@ impl MemoryManager {
 
         if let Ok(content) = fs::read_to_string(self.long_term_path()) {
             if !content.trim().is_empty() {
-                parts.push(format!("## Long-term Memory (MEMORY.md)\n\n{}", content.trim()));
+                parts.push(format!(
+                    "## Long-term Memory (MEMORY.md)\n\n{}",
+                    content.trim()
+                ));
             }
         }
 
@@ -135,8 +138,7 @@ impl MemoryManager {
         if !path.exists() {
             return Ok(format!("No log found for {}.", date_str));
         }
-        fs::read_to_string(&path)
-            .map_err(|e| format!("Failed to read log for {}: {}", date_str, e))
+        fs::read_to_string(&path).map_err(|e| format!("Failed to read log for {}: {}", date_str, e))
     }
 
     /// Simple keyword search across all memory files, returning ranked snippets.
@@ -494,9 +496,7 @@ mod tests {
         let result = mgr.search("keyword").unwrap();
         // MEMORY.md result should appear before the dated log
         let mem_pos = result.find("MEMORY.md").unwrap_or(usize::MAX);
-        let date_pos = result
-            .find(&MemoryManager::today())
-            .unwrap_or(usize::MAX);
+        let date_pos = result.find(&MemoryManager::today()).unwrap_or(usize::MAX);
         assert!(
             mem_pos < date_pos,
             "MEMORY.md should appear before dated log; result:\n{}",
@@ -504,4 +504,3 @@ mod tests {
         );
     }
 }
-

@@ -249,9 +249,8 @@ impl VersionManager {
 
         // Write the standalone workspace manifest.
         let workspace_toml = generate_seed_workspace_toml();
-        fs::write(self.source_dir.join("Cargo.toml"), workspace_toml).map_err(|e| {
-            format!("Failed to write workspace Cargo.toml: {}", e)
-        })?;
+        fs::write(self.source_dir.join("Cargo.toml"), workspace_toml)
+            .map_err(|e| format!("Failed to write workspace Cargo.toml: {}", e))?;
 
         let o = Command::new("git")
             .args(["add", "-A"])
@@ -604,13 +603,8 @@ impl VersionManager {
     /// `.git` and `target`.
     fn copy_source(&self, from: &Path, to: &Path) -> Result<(), String> {
         // Clean destination: remove everything except .git and target.
-        clean_dir_except(to, &[".git", "target"]).map_err(|e| {
-            format!(
-                "Failed to clean destination {}: {}",
-                to.display(),
-                e
-            )
-        })?;
+        clean_dir_except(to, &[".git", "target"])
+            .map_err(|e| format!("Failed to clean destination {}: {}", to.display(), e))?;
 
         copy_dir_recursive(from, to).map_err(|e| {
             format!(
@@ -885,8 +879,7 @@ impl VersionManager {
     /// Returns `true` only when `version` matches the current branch and the
     /// binary file is present.
     pub fn has_binary(&self, version: &str) -> bool {
-        self.binary_path.exists()
-            && self.current_version().as_deref() == Some(version)
+        self.binary_path.exists() && self.current_version().as_deref() == Some(version)
     }
 
     /// Check if the version branch exists (i.e. it has source).
@@ -1025,7 +1018,9 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let mgr = VersionManager::new(tmp.path());
 
-        let info = mgr.allocate_version().expect("V1 allocation should succeed");
+        let info = mgr
+            .allocate_version()
+            .expect("V1 allocation should succeed");
         assert_eq!(info.version, "V1");
         assert!(info.source_dir.exists(), "source dir must exist");
 
@@ -1282,11 +1277,7 @@ mod tests {
         // Build a fake staging directory.
         let staging = tmp.path().join("staging");
         fs::create_dir_all(staging.join(".git").join("objects")).unwrap();
-        fs::write(
-            staging.join(".git").join("HEAD"),
-            "ref: refs/heads/fake\n",
-        )
-        .unwrap();
+        fs::write(staging.join(".git").join("HEAD"), "ref: refs/heads/fake\n").unwrap();
         fs::create_dir_all(staging.join("target").join("debug")).unwrap();
         fs::write(
             staging.join("target").join("debug").join("artifact"),
@@ -1609,7 +1600,10 @@ mod tests {
         mgr.commit_version_source(&v1, &staging).unwrap();
 
         let head_after = git_current_branch(&mgr.source_dir);
-        assert_eq!(head_after, "main", "HEAD must stay on main after worktree commit");
+        assert_eq!(
+            head_after, "main",
+            "HEAD must stay on main after worktree commit"
+        );
 
         // Clean up.
         mgr.cleanup_worktree("V1");
@@ -1633,8 +1627,11 @@ mod tests {
             b"[package]\nname = \"test\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
         )
         .unwrap();
-        fs::write(staging.join("src").join("main.rs"), b"fn main() { println!(\"v1\"); }\n")
-            .unwrap();
+        fs::write(
+            staging.join("src").join("main.rs"),
+            b"fn main() { println!(\"v1\"); }\n",
+        )
+        .unwrap();
         mgr.commit_version_source(&v1, &staging).unwrap();
 
         // The build_dir worktree must have V1's source.
@@ -1650,8 +1647,11 @@ mod tests {
 
         // V2: source with "v2" marker.
         let v2 = mgr.allocate_version().expect("V2");
-        fs::write(staging.join("src").join("main.rs"), b"fn main() { println!(\"v2\"); }\n")
-            .unwrap();
+        fs::write(
+            staging.join("src").join("main.rs"),
+            b"fn main() { println!(\"v2\"); }\n",
+        )
+        .unwrap();
         mgr.commit_version_source(&v2, &staging).unwrap();
 
         // V2's build_dir must have V2's source, NOT V1's.
@@ -1692,8 +1692,11 @@ mod tests {
             b"[package]\nname = \"test\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
         )
         .unwrap();
-        fs::write(staging.join("src").join("main.rs"), b"fn main() { println!(\"v1\"); }\n")
-            .unwrap();
+        fs::write(
+            staging.join("src").join("main.rs"),
+            b"fn main() { println!(\"v1\"); }\n",
+        )
+        .unwrap();
         let v1 = mgr.allocate_version().expect("V1");
         mgr.commit_version_source(&v1, &staging).unwrap();
         mgr.switch_to("V1").unwrap();
@@ -1702,8 +1705,11 @@ mod tests {
         assert!(c1.contains("v1"), "After switch to V1: {}", c1);
 
         // V2
-        fs::write(staging.join("src").join("main.rs"), b"fn main() { println!(\"v2\"); }\n")
-            .unwrap();
+        fs::write(
+            staging.join("src").join("main.rs"),
+            b"fn main() { println!(\"v2\"); }\n",
+        )
+        .unwrap();
         let v2 = mgr.allocate_version().expect("V2");
         mgr.commit_version_source(&v2, &staging).unwrap();
         mgr.switch_to("V2").unwrap();
@@ -1712,8 +1718,11 @@ mod tests {
         assert!(c2.contains("v2"), "After switch to V2: {}", c2);
 
         // V3
-        fs::write(staging.join("src").join("main.rs"), b"fn main() { println!(\"v3\"); }\n")
-            .unwrap();
+        fs::write(
+            staging.join("src").join("main.rs"),
+            b"fn main() { println!(\"v3\"); }\n",
+        )
+        .unwrap();
         let v3 = mgr.allocate_version().expect("V3");
         mgr.commit_version_source(&v3, &staging).unwrap();
         mgr.switch_to("V3").unwrap();
@@ -1725,7 +1734,11 @@ mod tests {
         let rolled = mgr.rollback().unwrap();
         assert_eq!(rolled, "V2");
         let c_rollback = fs::read_to_string(mgr.source_dir().join("src").join("main.rs")).unwrap();
-        assert!(c_rollback.contains("v2"), "After rollback to V2: {}", c_rollback);
+        assert!(
+            c_rollback.contains("v2"),
+            "After rollback to V2: {}",
+            c_rollback
+        );
     }
 
     /// Switching to a branch and running `cargo check` must succeed.
@@ -1742,8 +1755,11 @@ mod tests {
             b"[package]\nname = \"demo\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
         )
         .unwrap();
-        fs::write(staging.join("src").join("main.rs"), b"fn main() { println!(\"v1\"); }\n")
-            .unwrap();
+        fs::write(
+            staging.join("src").join("main.rs"),
+            b"fn main() { println!(\"v1\"); }\n",
+        )
+        .unwrap();
 
         let v1 = mgr.allocate_version().expect("V1");
         mgr.commit_version_source(&v1, &staging).unwrap();
@@ -1797,8 +1813,11 @@ mod tests {
             b"[package]\nname = \"demo\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
         )
         .unwrap();
-        fs::write(staging.join("src").join("main.rs"), b"fn main() { println!(\"hello\"); }\n")
-            .unwrap();
+        fs::write(
+            staging.join("src").join("main.rs"),
+            b"fn main() { println!(\"hello\"); }\n",
+        )
+        .unwrap();
 
         let v1 = mgr.allocate_version().expect("V1");
         mgr.commit_version_source(&v1, &staging).unwrap();
@@ -1817,7 +1836,10 @@ mod tests {
 
         // Main HEAD is still on `main`.
         let head = git_current_branch(&mgr.source_dir);
-        assert_eq!(head, "main", "HEAD must remain on main during worktree build");
+        assert_eq!(
+            head, "main",
+            "HEAD must remain on main during worktree build"
+        );
 
         mgr.cleanup_worktree("V1");
     }
@@ -1846,7 +1868,10 @@ mod tests {
         );
 
         // The branch itself should still exist.
-        assert!(mgr.has_source("V1"), "V1 branch must still exist after worktree cleanup");
+        assert!(
+            mgr.has_source("V1"),
+            "V1 branch must still exist after worktree cleanup"
+        );
     }
 
     // -- helper --

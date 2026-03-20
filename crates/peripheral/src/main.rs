@@ -155,7 +155,15 @@ async fn main() {
     let source = SourceManager::new(config.workspace_root);
     let memory = MemoryManager::new(&config.base_dir);
 
-    run(deepseek, source, memory, ipc, config.heartbeat_interval, config.http_port).await;
+    run(
+        deepseek,
+        source,
+        memory,
+        ipc,
+        config.heartbeat_interval,
+        config.http_port,
+    )
+    .await;
 }
 
 async fn run(
@@ -229,7 +237,11 @@ async fn run(
     let listener = match tokio::net::TcpListener::bind(addr).await {
         Ok(l) => l,
         Err(e) => {
-            tracing::warn!("Failed to bind HTTP on {}: {}; falling back to OS-assigned port", addr, e);
+            tracing::warn!(
+                "Failed to bind HTTP on {}: {}; falling back to OS-assigned port",
+                addr,
+                e
+            );
             let fallback = std::net::SocketAddr::from(([0, 0, 0, 0], 0u16));
             match tokio::net::TcpListener::bind(fallback).await {
                 Ok(l) => l,

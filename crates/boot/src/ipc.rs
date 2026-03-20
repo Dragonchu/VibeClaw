@@ -385,7 +385,11 @@ mod tests {
 
     /// Helper: create a RouterActor + RouterHandle (without binding a UDS).
     /// Returns (handle, cmd_rx, boot_tx) so tests can drive the actor directly.
-    fn make_handle() -> (RouterHandle, mpsc::Receiver<RouterCommand>, mpsc::Sender<Envelope>) {
+    fn make_handle() -> (
+        RouterHandle,
+        mpsc::Receiver<RouterCommand>,
+        mpsc::Sender<Envelope>,
+    ) {
         let (boot_tx, _boot_rx) = mpsc::channel(16);
         let (cmd_tx, cmd_rx) = mpsc::channel(256);
         let handle = RouterHandle { cmd_tx };
