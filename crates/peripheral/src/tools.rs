@@ -4,6 +4,8 @@ use crate::source::SourceManager;
 
 const DEFAULT_MAX_RESULTS: usize = 40;
 const ABSOLUTE_MAX_RESULTS: usize = 200;
+const DEFAULT_READ_LIMIT: usize = 200;
+const ABSOLUTE_READ_LIMIT: usize = 2_000;
 
 pub fn tool_definitions() -> Vec<ToolDefinition> {
     vec![
@@ -11,13 +13,23 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
             type_: "function".to_string(),
             function: FunctionDefinition {
                 name: "read_source_file".to_string(),
-                description: "Read a file from the agent's source code. Supports optional 1-based line ranges. Path is relative to the peripheral crate root (e.g. 'src/main.rs', 'Cargo.toml')".to_string(),
+                description: "Read a file from the agent's source code. Supports optional line windows via offset+limit or explicit 1-based ranges. Path is relative to the peripheral crate root (e.g. 'src/main.rs', 'Cargo.toml')".to_string(),
                 parameters: serde_json::json!({
                     "type": "object",
                     "properties": {
                         "path": {
                             "type": "string",
                             "description": "Relative file path within the peripheral crate"
+                        },
+                        "offset": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "description": "Optional 0-based line offset. Use with limit to page through large files."
+                        },
+                        "limit": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "description": "Optional number of lines to read. Defaults to 200 and is capped."
                         },
                         "start_line": {
                             "type": "integer",
@@ -85,8 +97,60 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
         ToolDefinition {
             type_: "function".to_string(),
             function: FunctionDefinition {
+                name: "edit_source_file".to_string(),
+                description: "Precisely replace an exact string in a source file. Fails if the old string is missing or ambiguous. Path is relative to the peripheral crate root (e.g. 'src/main.rs').".to_string(),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "path": {
+                            "type": "string",
+                            "description": "Relative file path within the peripheral crate"
+                        },
+                        "old_string": {
+                            "type": "string",
+                            "description": "Exact string to replace. Must appear exactly once."
+                        },
+                        "new_string": {
+                            "type": "string",
+                            "description": "Replacement string"
+                        }
+                    },
+                    "required": ["path", "old_string", "new_string"]
+                }),
+            },
+        },
+        ToolDefinition {
+            type_: "function".to_string(),
+            function: FunctionDefinition {
+                name: "search_source".to_string(),
+                description: "Search source files for a query (supports regex), respecting .gitignore. Paths are relative to the peripheral crate root.".to_string(),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "query": {
+                            "type": "string",
+                            "description": "Search term to look for in source files"
+                        },
+                        "path": {
+                            "type": "string",
+                            "description": "Optional directory or file path to scope the search. Defaults to '.'."
+                        },
+                        "max_results": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "description": "Maximum number of matches to return (default 40, capped at 200)."
+                        }
+                    },
+                    "required": ["query"]
+                }),
+            },
+        },
+        // Backwards compatibility while the model picks up the new name.
+        ToolDefinition {
+            type_: "function".to_string(),
+            function: FunctionDefinition {
                 name: "search_source_files".to_string(),
-                description: "Search source files for a query, respecting .gitignore. Paths are relative to the peripheral crate root.".to_string(),
+                description: "Search source files for a query (supports regex), respecting .gitignore. Paths are relative to the peripheral crate root.".to_string(),
                 parameters: serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -236,6 +300,29 @@ pub fn execute_tool(
                 .get("end_line")
                 .and_then(|v| v.as_u64())
                 .map(|v| v as usize);
+            let offset = args
+                .get("offset")
+                .and_then(|v| v.as_u64())
+                .map(|v| v as usize);
+            let limit = args
+                .get("limit")
+                .and_then(|v| v.as_u64())
+                .map(|v| v as usize);
+
+            if offset.is_some() || limit.is_some() {
+                if start.is_some() || end.is_some() {
+                    return Err("Use either offset/limit or start_line/end_line, not both."
+                        .to_string());
+                }
+                let offset = offset.unwrap_or(0);
+                let limit = limit
+                    .unwrap_or(DEFAULT_READ_LIMIT)
+                    .clamp(1, ABSOLUTE_READ_LIMIT);
+                let start_line = offset + 1;
+                let end_line = start_line + limit - 1;
+                return Ok(Some((start_line, end_line)));
+            }
+
             match (start, end) {
                 (None, None) => Ok(None),
                 (Some(s), None) => Ok(Some((s, s))),
@@ -291,7 +378,21 @@ pub fn execute_tool(
                 Err(e) => ToolResult::Output(format!("Error: {}", e)),
             }
         }
-        "search_source_files" => {
+        "edit_source_file" => {
+            let path = args["path"].as_str().unwrap_or("");
+            let old = args["old_string"].as_str().unwrap_or("");
+            let new = args["new_string"].as_str().unwrap_or("");
+            if path.is_empty() || old.is_empty() {
+                return ToolResult::Output(
+                    "Error: 'path' and 'old_string' parameters are required.".to_string(),
+                );
+            }
+            match source.edit_file(path, old, new) {
+                Ok(report) => ToolResult::Output(report.summary()),
+                Err(e) => ToolResult::Output(format!("Error: {}", e)),
+            }
+        }
+        "search_source" | "search_source_files" => {
             let query = args["query"].as_str().unwrap_or("");
             if query.trim().is_empty() {
                 return ToolResult::Output(
@@ -477,11 +578,11 @@ mod tests {
     }
 
     #[test]
-    fn search_source_files_returns_match() {
+    fn search_source_returns_match() {
         let (_dir, mut source, mut memory) = temp_tools();
         source.write_file("src/lib.rs", "needle here\n").unwrap();
         let result = execute_tool(
-            "search_source_files",
+            "search_source",
             r#"{"query": "needle", "path": "src"}"#,
             &mut source,
             &mut memory,
@@ -506,7 +607,7 @@ mod tests {
             .unwrap();
         let result = execute_tool(
             "read_source_file",
-            r#"{"path": "src/lib.rs", "start_line": 2, "end_line": 2}"#,
+            r#"{"path": "src/lib.rs", "offset": 1, "limit": 1}"#,
             &mut source,
             &mut memory,
         );
@@ -514,6 +615,62 @@ mod tests {
         match result {
             ToolResult::Output(msg) => {
                 assert!(msg.contains("2: two"), "expected line 2, got: {}", msg);
+            }
+            other => panic!("expected Output, got: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn edit_source_file_replaces_once() {
+        let (_dir, mut source, mut memory) = temp_tools();
+        source
+            .write_file("src/lib.rs", "alpha\nbeta\ngamma\n")
+            .unwrap();
+
+        let result = execute_tool(
+            "edit_source_file",
+            r#"{"path": "src/lib.rs", "old_string": "beta", "new_string": "BETA"}"#,
+            &mut source,
+            &mut memory,
+        );
+
+        match result {
+            ToolResult::Output(msg) => {
+                assert!(
+                    msg.contains("Updated src/lib.rs"),
+                    "expected success output, got: {}",
+                    msg
+                );
+            }
+            other => panic!("expected Output, got: {:?}", other),
+        }
+
+        let content = source.read_file("src/lib.rs").unwrap();
+        assert!(content.contains("BETA"));
+        assert!(!content.contains("beta"));
+    }
+
+    #[test]
+    fn edit_source_file_rejects_ambiguous_match() {
+        let (_dir, mut source, mut memory) = temp_tools();
+        source
+            .write_file("src/lib.rs", "foo\nbar\nfoo\n")
+            .unwrap();
+
+        let result = execute_tool(
+            "edit_source_file",
+            r#"{"path": "src/lib.rs", "old_string": "foo", "new_string": "FOO"}"#,
+            &mut source,
+            &mut memory,
+        );
+
+        match result {
+            ToolResult::Output(msg) => {
+                assert!(
+                    msg.contains("ambiguous"),
+                    "expected ambiguity error, got: {}",
+                    msg
+                );
             }
             other => panic!("expected Output, got: {:?}", other),
         }

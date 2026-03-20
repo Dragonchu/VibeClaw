@@ -1,5 +1,6 @@
 use ignore::{WalkBuilder, gitignore::GitignoreBuilder};
 use similar::TextDiff;
+use regex::Regex;
 use std::fmt::Write;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -184,6 +185,53 @@ impl SourceManager {
         })
     }
 
+    /// Replace an exact string in a file. Fails if the string is missing or occurs more than once.
+    pub fn edit_file(
+        &mut self,
+        relative_path: &str,
+        old: &str,
+        new: &str,
+    ) -> Result<WriteReport, String> {
+        let target = self.peripheral_root.join(relative_path);
+        if !target.starts_with(&self.peripheral_root) {
+            return Err("Path traversal not allowed".to_string());
+        }
+        if !target.exists() {
+            return Err(format!(
+                "File not found: '{}' (resolved to {})",
+                relative_path,
+                target.display()
+            ));
+        }
+        if target.is_dir() {
+            return Err(self.directory_hint(relative_path));
+        }
+        let original = fs::read_to_string(&target)
+            .map_err(|e| format!("Read error: {} (resolved to {})", e, target.display()))?;
+
+        let occurrences = original.matches(old).count();
+        if occurrences == 0 {
+            return Err("Old string not found in file; no changes applied.".to_string());
+        }
+        if occurrences > 1 {
+            return Err(format!(
+                "Old string is ambiguous ({} occurrences). Provide a more specific old_string.",
+                occurrences
+            ));
+        }
+
+        let new_content = original.replacen(old, new, 1);
+        fs::write(&target, new_content.as_bytes())
+            .map_err(|e| format!("Write error: {} (resolved to {})", e, target.display()))?;
+
+        let diff = summarize_diff(&original, &new_content);
+        Ok(WriteReport {
+            path: relative_path.to_string(),
+            range: None,
+            diff,
+        })
+    }
+
     /// Search for a query string within the peripheral workspace respecting .gitignore files.
     pub fn search(
         &self,
@@ -194,6 +242,16 @@ impl SourceManager {
         if query.trim().is_empty() {
             return Err("Search query must not be empty.".to_string());
         }
+
+        let regex = match Regex::new(query) {
+            Ok(re) => Some(re),
+            Err(e) => {
+                return Err(format!(
+                    "Invalid regex '{}': {}. Provide a valid regex or escape metacharacters for literal search.",
+                    query, e
+                ));
+            }
+        };
 
         let root = self.peripheral_root.join(relative_path);
         if !root.starts_with(&self.peripheral_root) {
@@ -238,6 +296,7 @@ impl SourceManager {
                 &root,
                 &self.peripheral_root,
                 query,
+                regex.as_ref(),
                 &mut results,
                 max_results,
             )?;
@@ -275,6 +334,7 @@ impl SourceManager {
                     path,
                     &self.peripheral_root,
                     query,
+                    regex.as_ref(),
                     &mut results,
                     max_results,
                 ) {
@@ -453,6 +513,7 @@ fn search_file(
     path: &Path,
     base: &Path,
     query: &str,
+    regex: Option<&Regex>,
     results: &mut Vec<String>,
     max_results: usize,
 ) -> Result<(), String> {
@@ -469,7 +530,12 @@ fn search_file(
     };
 
     for (idx, line) in content.lines().enumerate() {
-        if line.contains(query) {
+        let is_match = if let Some(re) = regex {
+            re.is_match(line)
+        } else {
+            line.contains(query)
+        };
+        if is_match {
             let trimmed = truncate_with_ellipsis(line.trim_end(), MAX_SEARCH_LINE_LENGTH);
             let rel = path
                 .strip_prefix(base)
@@ -718,6 +784,48 @@ mod tests {
             !result.contains("ignored_dir"),
             "ignored directory should not appear: {}",
             result
+        );
+    }
+
+    #[test]
+    fn edit_file_replaces_unique_match() {
+        let (_dir, mut mgr) = temp_source();
+        mgr.write_file("src/lib.rs", "one\ntwo\nthree\n").unwrap();
+
+        let report = mgr
+            .edit_file("src/lib.rs", "two", "TWO")
+            .expect("edit should succeed");
+
+        assert!(report.diff.contains("@@"));
+        let updated = mgr.read_file("src/lib.rs").unwrap();
+        assert!(updated.contains("TWO"));
+        assert!(!updated.contains("two\n"));
+    }
+
+    #[test]
+    fn edit_file_rejects_ambiguous_match() {
+        let (_dir, mut mgr) = temp_source();
+        mgr.write_file("src/lib.rs", "dup\ndup\n").unwrap();
+        let result = mgr.edit_file("src/lib.rs", "dup", "x");
+        assert!(result.is_err());
+        assert!(
+            result.unwrap_err().contains("ambiguous"),
+            "expected ambiguity error"
+        );
+    }
+
+    #[test]
+    fn search_supports_regex() {
+        let (_dir, mut mgr) = temp_source();
+        mgr.write_file("src/lib.rs", "match_me\nnope\n").unwrap();
+
+        let out = mgr
+            .search("match.*", "src", 10)
+            .expect("regex search should work");
+        assert!(
+            out.contains("src/lib.rs"),
+            "expected regex match in output, got: {}",
+            out
         );
     }
 }
