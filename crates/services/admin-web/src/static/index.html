@@ -1,0 +1,363 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Reloopy Admin</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'SF Mono', 'Fira Code', monospace; background: #0d1117; color: #c9d1d9; min-height: 100vh; }
+  header { background: #161b22; border-bottom: 1px solid #30363d; padding: 12px 24px; display: flex; align-items: center; gap: 16px; }
+  header h1 { font-size: 1.1rem; color: #58a6ff; }
+  header nav a { color: #8b949e; text-decoration: none; margin-left: 16px; font-size: 0.9rem; }
+  header nav a:hover { color: #c9d1d9; }
+  .container { max-width: 1200px; margin: 24px auto; padding: 0 24px; }
+  .card { background: #161b22; border: 1px solid #30363d; border-radius: 6px; padding: 16px; margin-bottom: 16px; }
+  .card h2 { font-size: 0.85rem; color: #8b949e; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 12px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 12px; }
+  .stat { background: #0d1117; border-radius: 4px; padding: 12px; }
+  .stat-value { font-size: 1.4rem; font-weight: bold; color: #58a6ff; }
+  .stat-label { font-size: 0.75rem; color: #8b949e; margin-top: 4px; }
+  .badge { display: inline-block; padding: 2px 8px; border-radius: 12px; font-size: 0.75rem; font-weight: 600; }
+  .badge-green { background: #1f6534; color: #3fb950; }
+  .badge-yellow { background: #4d2d00; color: #e3b341; }
+  .badge-red { background: #4d1a1a; color: #f85149; }
+  .badge-blue { background: #0c2d6b; color: #58a6ff; }
+  .badge-gray { background: #21262d; color: #8b949e; }
+  table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+  th { color: #8b949e; text-align: left; padding: 8px; border-bottom: 1px solid #30363d; font-weight: normal; }
+  td { padding: 8px; border-bottom: 1px solid #21262d; }
+  tr:last-child td { border-bottom: none; }
+  button { background: #238636; color: #fff; border: none; border-radius: 4px; padding: 6px 14px; cursor: pointer; font-size: 0.8rem; font-family: inherit; }
+  button:hover { background: #2ea043; }
+  button.danger { background: #da3633; }
+  button.danger:hover { background: #f85149; }
+  button.secondary { background: #21262d; color: #c9d1d9; border: 1px solid #30363d; }
+  button.secondary:hover { background: #30363d; }
+  #events-log { background: #0d1117; border-radius: 4px; padding: 12px; font-size: 0.75rem; height: 220px; overflow-y: auto; }
+  #events-log .entry { margin-bottom: 4px; color: #8b949e; }
+  #events-log .entry .ts { color: #3fb950; margin-right: 8px; }
+  #events-log .entry .type { color: #58a6ff; margin-right: 8px; }
+  .progress-bar { background: #21262d; border-radius: 4px; height: 6px; margin-top: 8px; }
+  .progress-bar-fill { background: #58a6ff; height: 6px; border-radius: 4px; transition: width 0.3s; }
+  .pipeline-stage { display: flex; align-items: center; gap: 12px; padding: 8px 0; }
+  .pipeline-stage .dot { width: 10px; height: 10px; border-radius: 50%; background: #30363d; flex-shrink: 0; }
+  .pipeline-stage.active .dot { background: #58a6ff; }
+  .pipeline-stage.done .dot { background: #3fb950; }
+  .pipeline-stage.failed .dot { background: #f85149; }
+  .pipeline-stage .label { font-size: 0.82rem; color: #8b949e; }
+  .pipeline-stage.active .label, .pipeline-stage.done .label { color: #c9d1d9; }
+  .tab-bar { display: flex; gap: 4px; margin-bottom: 16px; }
+  .tab { padding: 6px 14px; border-radius: 4px; cursor: pointer; font-size: 0.82rem; color: #8b949e; background: #21262d; border: 1px solid #30363d; }
+  .tab.active { background: #0c2d6b; color: #58a6ff; border-color: #388bfd; }
+  .section { display: none; }
+  .section.active { display: block; }
+  #toast { position: fixed; bottom: 24px; right: 24px; background: #21262d; border: 1px solid #30363d; border-radius: 6px; padding: 10px 16px; font-size: 0.82rem; display: none; z-index: 999; }
+</style>
+</head>
+<body>
+<header>
+  <h1>🔄 Reloopy Admin</h1>
+  <nav>
+    <a href="#" onclick="showTab('dashboard')">Dashboard</a>
+    <a href="#" onclick="showTab('versions')">Versions</a>
+    <a href="#" onclick="showTab('peers')">Peers</a>
+    <a href="#" onclick="showTab('audit')">Audit</a>
+    <a href="/agent" target="_blank">Agent →</a>
+  </nav>
+  <span id="runlevel-badge" class="badge badge-gray" style="margin-left:auto">…</span>
+  <button class="secondary" onclick="refresh()" style="margin-left:8px">↻ Refresh</button>
+</header>
+
+<div class="container">
+
+  <!-- Dashboard Tab -->
+  <div id="tab-dashboard" class="section active">
+    <div class="grid" style="margin-bottom:16px">
+      <div class="stat"><div class="stat-value" id="stat-version">—</div><div class="stat-label">Current Version</div></div>
+      <div class="stat"><div class="stat-value" id="stat-rollback">—</div><div class="stat-label">Rollback Target</div></div>
+      <div class="stat"><div class="stat-value" id="stat-peers">—</div><div class="stat-label">Connected Peers</div></div>
+      <div class="stat"><div class="stat-value" id="stat-probation">—</div><div class="stat-label">Probation</div></div>
+    </div>
+
+    <div class="card" style="margin-bottom:16px">
+      <h2>Pipeline</h2>
+      <div id="pipeline">
+        <div class="pipeline-stage" id="ps-submit"><div class="dot"></div><div class="label">SubmitUpdate</div></div>
+        <div class="pipeline-stage" id="ps-compile"><div class="dot"></div><div class="label">Compile</div><div id="compile-pct" style="font-size:0.75rem;color:#8b949e;margin-left:auto"></div></div>
+        <div class="pipeline-stage" id="ps-test"><div class="dot"></div><div class="label">Test</div><div id="test-pct" style="font-size:0.75rem;color:#8b949e;margin-left:auto"></div></div>
+        <div class="pipeline-stage" id="ps-swap"><div class="dot"></div><div class="label">Hot-Swap</div></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Live Events <span id="event-status" style="color:#8b949e;font-weight:normal;font-size:0.75rem">connecting…</span></h2>
+      <div id="events-log"></div>
+    </div>
+  </div>
+
+  <!-- Versions Tab -->
+  <div id="tab-versions" class="section">
+    <div class="card">
+      <h2>Versions <button onclick="loadVersions()" class="secondary" style="float:right">↻</button></h2>
+      <table id="versions-table">
+        <thead><tr><th>Version</th><th>Status</th><th>Actions</th></tr></thead>
+        <tbody id="versions-body"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- Peers Tab -->
+  <div id="tab-peers" class="section">
+    <div class="card">
+      <h2>Lease Status <button onclick="loadPeers()" class="secondary" style="float:right">↻</button></h2>
+      <table id="peers-table">
+        <thead><tr><th>Peer</th><th>Status</th><th>Probation</th><th>CPU %</th><th>Mem MB</th></tr></thead>
+        <tbody id="peers-body"></tbody>
+      </table>
+    </div>
+    <div class="card" style="margin-top:16px">
+      <h2>Runlevel Control</h2>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <button onclick="setRunlevel(0,'Halt')">Halt (0)</button>
+        <button onclick="setRunlevel(1,'Safe')">Safe (1)</button>
+        <button onclick="setRunlevel(2,'Normal')">Normal (2)</button>
+        <button onclick="setRunlevel(3,'Evolve')">Evolve (3)</button>
+        <button class="danger" onclick="doShutdown()">Shutdown</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Audit Tab -->
+  <div id="tab-audit" class="section">
+    <div class="card">
+      <h2>Audit Log <button onclick="loadAudit()" class="secondary" style="float:right">↻</button></h2>
+      <table id="audit-table">
+        <thead><tr><th>Time</th><th>Event</th><th>Version</th><th>Details</th></tr></thead>
+        <tbody id="audit-body"></tbody>
+      </table>
+    </div>
+  </div>
+
+</div>
+
+<div id="toast"></div>
+
+<script>
+// ---------------------------------------------------------------------------
+// Tab switching
+// ---------------------------------------------------------------------------
+function showTab(name) {
+  document.querySelectorAll('.section').forEach(el => el.classList.remove('active'));
+  document.getElementById('tab-' + name).classList.add('active');
+  if (name === 'versions') loadVersions();
+  if (name === 'peers') loadPeers();
+  if (name === 'audit') loadAudit();
+}
+
+function toast(msg, error) {
+  const el = document.getElementById('toast');
+  el.textContent = msg;
+  el.style.borderColor = error ? '#f85149' : '#3fb950';
+  el.style.display = 'block';
+  setTimeout(() => el.style.display = 'none', 3000);
+}
+
+// ---------------------------------------------------------------------------
+// Status / dashboard
+// ---------------------------------------------------------------------------
+async function loadStatus() {
+  try {
+    const r = await fetch('/api/status');
+    if (!r.ok) throw new Error(await r.text());
+    const d = await r.json();
+    document.getElementById('stat-version').textContent = d.current_version || '—';
+    document.getElementById('stat-rollback').textContent = d.rollback_version || '—';
+    document.getElementById('stat-peers').textContent = (d.connected_peers || []).join(', ') || '—';
+    document.getElementById('stat-probation').textContent = d.probation_active ? 'Active ⚠️' : 'None';
+    const rl = d.runlevel;
+    const badge = document.getElementById('runlevel-badge');
+    const labels = {0: 'Halt', 1: 'Safe', 2: 'Normal', 3: 'Evolve'};
+    const cls = {0: 'badge-red', 1: 'badge-yellow', 2: 'badge-green', 3: 'badge-blue'};
+    badge.textContent = (labels[rl] || 'Unknown') + ' (' + rl + ')';
+    badge.className = 'badge ' + (cls[rl] || 'badge-gray');
+  } catch(e) { console.warn('Status fetch failed:', e); }
+}
+
+function refresh() { loadStatus(); }
+
+// ---------------------------------------------------------------------------
+// Versions tab
+// ---------------------------------------------------------------------------
+async function loadVersions() {
+  try {
+    const r = await fetch('/api/versions');
+    const d = await r.json();
+    const body = document.getElementById('versions-body');
+    body.innerHTML = '';
+    for (const v of (d.versions || [])) {
+      const tr = document.createElement('tr');
+      let badges = '';
+      if (v.is_current) badges += '<span class="badge badge-green">current</span> ';
+      if (v.is_rollback) badges += '<span class="badge badge-yellow">rollback</span>';
+      tr.innerHTML = `<td>${v.version}</td><td>${badges || '<span class="badge badge-gray">old</span>'}</td>
+        <td><button class="secondary" onclick="rollbackTo('${v.version}')">Rollback to</button></td>`;
+      body.appendChild(tr);
+    }
+  } catch(e) { toast('Failed to load versions: ' + e, true); }
+}
+
+async function rollbackTo(ver) {
+  if (!confirm('Rollback to ' + ver + '?')) return;
+  try {
+    const r = await fetch('/api/rollback?to=' + encodeURIComponent(ver), {method:'POST'});
+    const d = await r.json();
+    toast(d.success ? 'Rolled back to ' + d.rolled_back_to : 'Error: ' + d.error, !d.success);
+    loadVersions();
+    loadStatus();
+  } catch(e) { toast('Rollback failed: ' + e, true); }
+}
+
+// ---------------------------------------------------------------------------
+// Peers tab
+// ---------------------------------------------------------------------------
+async function loadPeers() {
+  try {
+    const r = await fetch('/api/peers');
+    const d = await r.json();
+    const body = document.getElementById('peers-body');
+    body.innerHTML = '';
+    for (const p of (d.leases || [])) {
+      const h = p.last_health;
+      const tr = document.createElement('tr');
+      tr.innerHTML = `<td>${p.identity}</td>
+        <td><span class="badge ${p.status === 'Alive' ? 'badge-green' : 'badge-red'}">${p.status}</span></td>
+        <td>${p.probation ? '<span class="badge badge-yellow">Yes</span>' : '—'}</td>
+        <td>${h ? h.cpu_percent.toFixed(1) : '—'}</td>
+        <td>${h ? (h.memory_bytes / BYTES_PER_MB).toFixed(1) : '—'}</td>`;
+      body.appendChild(tr);
+    }
+  } catch(e) { toast('Failed to load peers: ' + e, true); }
+}
+
+async function setRunlevel(level, name) {
+  if (!confirm('Set runlevel to ' + name + ' (' + level + ')?')) return;
+  try {
+    const r = await fetch('/api/runlevel?level=' + level, {method:'POST'});
+    const d = await r.json();
+    toast(d.accepted ? 'Runlevel change accepted' : 'Rejected: ' + d.reason, !d.accepted);
+    loadStatus();
+  } catch(e) { toast('Runlevel change failed: ' + e, true); }
+}
+
+async function doShutdown() {
+  if (!confirm('Shutdown the entire Reloopy system?')) return;
+  try {
+    await fetch('/api/shutdown', {method:'POST'});
+    toast('Shutdown initiated');
+  } catch(e) { toast('Shutdown failed: ' + e, true); }
+}
+
+// ---------------------------------------------------------------------------
+// Audit tab
+// ---------------------------------------------------------------------------
+async function loadAudit() {
+  try {
+    const r = await fetch('/api/audit?limit=100');
+    const d = await r.json();
+    const body = document.getElementById('audit-body');
+    body.innerHTML = '';
+    if (d.error) { body.innerHTML = `<tr><td colspan=4 style="color:#f85149">${d.error}</td></tr>`; return; }
+    for (const e of (d.entries || [])) {
+      const tr = document.createElement('tr');
+      tr.innerHTML = `<td style="white-space:nowrap">${e.timestamp}</td>
+        <td><span class="badge badge-blue">${e.event}</span></td>
+        <td>${e.version || '—'}</td>
+        <td style="font-size:0.75rem;color:#8b949e">${JSON.stringify(e.details)}</td>`;
+      body.appendChild(tr);
+    }
+  } catch(e) { toast('Failed to load audit: ' + e, true); }
+}
+
+// ---------------------------------------------------------------------------
+// SSE event stream
+// ---------------------------------------------------------------------------
+let pipelineState = {};
+
+function appendEvent(type, data) {
+  const log = document.getElementById('events-log');
+  const entry = document.createElement('div');
+  entry.className = 'entry';
+  const ts = new Date().toLocaleTimeString();
+  entry.innerHTML = `<span class="ts">${ts}</span><span class="type">${type}</span>${JSON.stringify(data)}`;
+  log.appendChild(entry);
+  log.scrollTop = log.scrollHeight;
+  // Keep last 100 entries
+  while (log.children.length > 100) log.removeChild(log.firstChild);
+}
+
+function updatePipeline(type, data) {
+  const stages = ['ps-submit', 'ps-compile', 'ps-test', 'ps-swap'];
+  if (type === 'SubmitUpdate') {
+    stages.forEach(id => { const el = document.getElementById(id); if(el) el.className = 'pipeline-stage'; });
+    const el = document.getElementById('ps-submit');
+    if (el) el.className = 'pipeline-stage done';
+    document.getElementById('compile-pct').textContent = '';
+    document.getElementById('test-pct').textContent = '';
+  } else if (type === 'CompileProgress') {
+    const el = document.getElementById('ps-compile');
+    if (el) el.className = 'pipeline-stage ' + (data.finished ? (data.stage === 'failed' ? 'failed' : 'done') : 'active');
+    document.getElementById('compile-pct').textContent = data.finished ? data.stage : data.percent + '%';
+  } else if (type === 'TestProgress') {
+    const el = document.getElementById('ps-test');
+    if (el) el.className = 'pipeline-stage ' + (data.finished ? 'done' : 'active');
+    document.getElementById('test-pct').textContent = data.total > 0 ? data.completed + '/' + data.total : '';
+  } else if (type === 'UpdateAccepted') {
+    const el = document.getElementById('ps-swap');
+    if (el) el.className = 'pipeline-stage done';
+  } else if (type === 'UpdateRejected') {
+    ['ps-compile','ps-test','ps-swap'].forEach(id => {
+      const el = document.getElementById(id);
+      if (el && el.className.includes('active')) el.className = 'pipeline-stage failed';
+    });
+  }
+}
+
+function connectSSE() {
+  const es = new EventSource('/events');
+  const status = document.getElementById('event-status');
+
+  es.onopen = () => { status.textContent = '● connected'; status.style.color = '#3fb950'; };
+  es.onerror = () => { status.textContent = '○ disconnected'; status.style.color = '#f85149'; };
+
+  // Handle named events
+  const types = ['CompileProgress', 'TestProgress', 'RunlevelChange', 'AuditLog',
+                  'UpdateAccepted', 'UpdateRejected', 'ProbationStarted', 'ProbationEnded',
+                  'SubmitUpdate'];
+  types.forEach(t => {
+    es.addEventListener(t, e => {
+      try {
+        const data = JSON.parse(e.data);
+        appendEvent(t, data);
+        updatePipeline(t, data);
+        if (t === 'RunlevelChange' || t === 'UpdateAccepted') loadStatus();
+      } catch (_) {}
+    });
+  });
+
+  // Fallback for unnamed messages
+  es.onmessage = e => {
+    try { appendEvent('event', JSON.parse(e.data)); } catch (_) {}
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Boot
+// ---------------------------------------------------------------------------
+const BYTES_PER_MB = 1048576;
+loadStatus();
+connectSSE();
+setInterval(loadStatus, 30000);
+</script>
+</body>
+</html>

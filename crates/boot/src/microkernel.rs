@@ -63,6 +63,7 @@ impl CapabilityRegistry {
             "audit" => Some(&["log_write", "log_query"]),
             "peripheral" => Some(&["agent"]),
             "admin" => Some(&["admin"]),
+            "admin-web" => Some(&["admin"]),
             _ => None,
         }
     }
@@ -93,6 +94,12 @@ impl CapabilityRegistry {
 }
 
 const PROBATION_DURATION_SECS: u64 = 3600;
+
+fn next_event_id() -> u64 {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(1);
+    COUNTER.fetch_add(1, Ordering::Relaxed)
+}
 const PROBATION_CHECK_INTERVAL_SECS: u64 = 30;
 const RESOURCE_CHECK_INTERVAL_SECS: u64 = 10;
 
@@ -148,6 +155,9 @@ pub struct Microkernel {
     hot_swap: HotSwapState,
     shutdown_requested: bool,
     peripheral_child: Option<tokio::process::Child>,
+    /// Peers that have subscribed to event broadcasts (identity → subscribed categories).
+    /// Empty category list means all events.
+    event_subscribers: std::collections::HashMap<String, Vec<String>>,
 }
 
 impl Microkernel {
@@ -180,6 +190,7 @@ impl Microkernel {
             hot_swap: HotSwapState::Idle,
             shutdown_requested: false,
             peripheral_child: None,
+            event_subscribers: std::collections::HashMap::new(),
         }
     }
 
@@ -339,6 +350,9 @@ impl Microkernel {
             }
             msg_types::ADMIN_SHUTDOWN_REQUEST => {
                 self.handle_admin_shutdown(envelope, router).await;
+            }
+            msg_types::EVENT_SUBSCRIBE => {
+                self.handle_event_subscribe(envelope, router).await;
             }
             _ => {
                 if messages::is_core_message(&envelope.msg_type) {
@@ -764,6 +778,16 @@ impl Microkernel {
                 tracing::error!("Version manager locked after consecutive failures");
             }
 
+            // Broadcast failure progress to subscribers
+            let progress = messages::CompileProgress {
+                version: result.version.clone(),
+                stage: "failed".to_string(),
+                percent: 0,
+                log_line: result.errors.clone().map(|e| e.lines().last().unwrap_or_default().to_string()),
+                finished: true,
+            };
+            self.broadcast_to_subscribers("compile", msg_types::COMPILE_PROGRESS, serde_json::to_value(&progress).unwrap_or_default(), router).await;
+
             let rejected = messages::UpdateRejected {
                 version: result.version,
                 reason: "Compilation failed".to_string(),
@@ -783,6 +807,16 @@ impl Microkernel {
         }
 
         tracing::info!(version = %result.version, "Compilation succeeded — sending to judge for testing");
+
+        // Broadcast success progress to subscribers
+        let progress = messages::CompileProgress {
+            version: result.version.clone(),
+            stage: "done".to_string(),
+            percent: 100,
+            log_line: None,
+            finished: true,
+        };
+        self.broadcast_to_subscribers("compile", msg_types::COMPILE_PROGRESS, serde_json::to_value(&progress).unwrap_or_default(), router).await;
 
         if let Some(binary_path_str) = &result.binary_path {
             let binary_path = PathBuf::from(binary_path_str);
@@ -859,6 +893,19 @@ impl Microkernel {
             overall_score = result.overall_score,
             "Test result received"
         );
+
+        // Broadcast final test progress to event subscribers
+        let total = result.invariant_results.len() as u32;
+        let test_progress = messages::TestProgress {
+            version: result.version.clone(),
+            stage: "scoring".to_string(),
+            completed: total,
+            total,
+            last_test_id: None,
+            last_test_passed: None,
+            finished: true,
+        };
+        self.broadcast_to_subscribers("test", msg_types::TEST_PROGRESS, serde_json::to_value(&test_progress).unwrap_or_default(), router).await;
 
         match result.verdict {
             TestVerdict::Pass => {
@@ -1347,6 +1394,7 @@ impl Microkernel {
                     router.remove_peer(&identity).await;
                     self.lease_manager.remove(&identity);
                     self.resource_monitor.remove_peer(&identity);
+                    self.event_subscribers.remove(&identity);
 
                     if during_hot_swap {
                         self.advance_hot_swap_after_disconnect(router).await;
@@ -2159,6 +2207,61 @@ impl Microkernel {
         };
         if let Err(e) = router.send_to(&from, response).await {
             tracing::warn!(peer = %from, "Failed to send AdminAuditQueryResponse: {}", e);
+        }
+    }
+
+    async fn handle_event_subscribe(&mut self, envelope: Envelope, router: &RouterHandle) {
+        let from = envelope.from.clone();
+        let req: messages::EventSubscribe = match serde_json::from_value(envelope.payload.clone()) {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::warn!(peer = %from, "Invalid EventSubscribe payload: {}", e);
+                return;
+            }
+        };
+
+        let categories = if req.event_filter.is_empty() {
+            vec!["compile".to_string(), "test".to_string(), "audit".to_string(), "runlevel".to_string()]
+        } else {
+            req.event_filter.clone()
+        };
+
+        tracing::info!(peer = %from, categories = ?categories, "Event subscription registered");
+        self.event_subscribers.insert(from.clone(), categories.clone());
+
+        let ack = messages::EventSubscribeAck {
+            accepted: true,
+            subscribed_categories: categories,
+        };
+        let response = Envelope {
+            from: "boot".to_string(),
+            to: from.clone(),
+            msg_type: msg_types::EVENT_SUBSCRIBE_ACK.to_string(),
+            id: envelope.id,
+            payload: serde_json::to_value(&ack).unwrap_or_default(),
+            fds: Vec::new(),
+        };
+        if let Err(e) = router.send_to(&from, response).await {
+            tracing::warn!(peer = %from, "Failed to send EventSubscribeAck: {}", e);
+        }
+    }
+
+    /// Broadcast a typed event envelope to all subscribers that are interested in `category`.
+    async fn broadcast_to_subscribers(&self, category: &str, msg_type: &str, payload: serde_json::Value, router: &RouterHandle) {
+        for (peer, categories) in &self.event_subscribers {
+            if categories.contains(&category.to_string()) {
+                let envelope = Envelope {
+                    from: "boot".to_string(),
+                    to: peer.clone(),
+                    msg_type: msg_type.to_string(),
+                    id: format!("boot-event-{}", next_event_id()),
+                    payload: payload.clone(),
+                    fds: Vec::new(),
+                };
+                if let Err(e) = router.send_to(peer, envelope).await {
+                    tracing::debug!(peer = %peer, "Failed to deliver event to subscriber: {}", e);
+                }
+            }
         }
     }
 }
