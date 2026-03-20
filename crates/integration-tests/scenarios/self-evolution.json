@@ -1,0 +1,104 @@
+[
+  {
+    "role": "assistant",
+    "content": "I'll start by listing the source files to understand the codebase structure.",
+    "tool_calls": [
+      {
+        "id": "tc-1",
+        "type": "function",
+        "function": {
+          "name": "list_source_files",
+          "arguments": "{\"path\":\"src\"}"
+        }
+      }
+    ]
+  },
+  {
+    "role": "assistant",
+    "content": "Let me read main.rs to understand the entry point.",
+    "tool_calls": [
+      {
+        "id": "tc-2",
+        "type": "function",
+        "function": {
+          "name": "read_source_file",
+          "arguments": "{\"path\":\"src/main.rs\"}"
+        }
+      }
+    ]
+  },
+  {
+    "role": "assistant",
+    "content": "Now let me search for areas that could be improved.",
+    "tool_calls": [
+      {
+        "id": "tc-3",
+        "type": "function",
+        "function": {
+          "name": "search_source",
+          "arguments": "{\"query\":\"TODO|FIXME|todo\",\"max_results\":10}"
+        }
+      }
+    ]
+  },
+  {
+    "role": "assistant",
+    "content": "I'll add a version info constant to main.rs to improve observability.",
+    "tool_calls": [
+      {
+        "id": "tc-4",
+        "type": "function",
+        "function": {
+          "name": "edit_source_file",
+          "arguments": "{\"path\":\"src/main.rs\",\"old_string\":\"use tracing\",\"new_string\":\"/// Build-time version tag for observability.\\nconst BUILD_VERSION: &str = env!(\\\"CARGO_PKG_VERSION\\\");\\n\\nuse tracing\"}"
+        }
+      }
+    ]
+  },
+  {
+    "role": "assistant",
+    "content": "Now let me read back the file to verify the edit.",
+    "tool_calls": [
+      {
+        "id": "tc-5",
+        "type": "function",
+        "function": {
+          "name": "read_source_file",
+          "arguments": "{\"path\":\"src/main.rs\",\"start_line\":1,\"end_line\":20}"
+        }
+      }
+    ]
+  },
+  {
+    "role": "assistant",
+    "content": "The edit looks good. Submitting the update for compilation and deployment.",
+    "tool_calls": [
+      {
+        "id": "tc-6",
+        "type": "function",
+        "function": {
+          "name": "submit_update",
+          "arguments": "{}"
+        }
+      }
+    ]
+  },
+  {
+    "role": "assistant",
+    "content": "Let me record what I learned in long-term memory for future reference.",
+    "tool_calls": [
+      {
+        "id": "tc-7",
+        "type": "function",
+        "function": {
+          "name": "memory_write",
+          "arguments": "{\"content\":\"Added BUILD_VERSION constant to main.rs for observability. The update was accepted as V1.\"}"
+        }
+      }
+    ]
+  },
+  {
+    "role": "assistant",
+    "content": "Self-evolution cycle complete. I listed source files, identified an improvement opportunity, edited main.rs to add a BUILD_VERSION constant, submitted the update which was accepted as V1, and recorded the change in memory for future reference."
+  }
+]
