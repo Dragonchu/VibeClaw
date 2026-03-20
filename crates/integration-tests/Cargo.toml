@@ -1,0 +1,17 @@
+[package]
+name = "reloopy-integration-tests"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "reloopy-integration-tests"
+path = "src/main.rs"
+
+[dependencies]
+tokio = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+reloopy-ipc = { workspace = true }
+reloopy-peripheral = { path = "../../crates/peripheral" }
+tempfile = "3"

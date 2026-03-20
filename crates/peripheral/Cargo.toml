@@ -3,6 +3,10 @@ name = "reloopy-peripheral"
 version.workspace = true
 edition.workspace = true
 
+[lib]
+name = "reloopy_peripheral"
+path = "src/lib.rs"
+
 [[bin]]
 name = "reloopy-peripheral"
 path = "src/main.rs"

@@ -10,18 +10,19 @@ use tokio::sync::{Mutex, mpsc};
 use tokio_stream::wrappers::ReceiverStream;
 
 use crate::agent::{Agent, AgentEvent, AgentOutcome};
+use crate::deepseek::LlmClient;
 
 const INDEX_HTML: &str = include_str!("static/index.html");
 
-pub struct AppState {
-    pub agent: Mutex<Agent>,
+pub struct AppState<L: LlmClient> {
+    pub agent: Mutex<Agent<L>>,
 }
 
-pub fn build_router(state: Arc<AppState>) -> Router {
+pub fn build_router<L: LlmClient + 'static>(state: Arc<AppState<L>>) -> Router {
     Router::new()
         .route("/", get(index))
-        .route("/api/chat", post(chat))
-        .route("/api/reset", post(reset))
+        .route("/api/chat", post(chat::<L>))
+        .route("/api/reset", post(reset::<L>))
         .with_state(state)
 }
 
@@ -35,13 +36,16 @@ async fn index() -> impl IntoResponse {
     )
 }
 
-async fn reset(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+async fn reset<L: LlmClient + 'static>(State(state): State<Arc<AppState<L>>>) -> impl IntoResponse {
     let mut agent = state.agent.lock().await;
     agent.reset_conversation();
     "ok"
 }
 
-async fn chat(State(state): State<Arc<AppState>>, body: String) -> impl IntoResponse {
+async fn chat<L: LlmClient + 'static>(
+    State(state): State<Arc<AppState<L>>>,
+    body: String,
+) -> impl IntoResponse {
     let (sse_tx, sse_rx) = mpsc::channel::<Result<Event, std::convert::Infallible>>(256);
 
     tokio::spawn(async move {

@@ -1,3 +1,5 @@
+use std::future::Future;
+
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 
@@ -124,6 +126,17 @@ pub enum StreamEvent {
     Error(String),
 }
 
+/// Abstraction over any LLM backend.  Implement this trait to substitute a
+/// different backend (e.g. [`ScriptedLlmClient`] for testing).
+pub trait LlmClient: Send + Sync {
+    fn chat_stream(
+        &self,
+        messages: &[ChatMessage],
+        tools: Option<&[ToolDefinition]>,
+        event_tx: mpsc::Sender<StreamEvent>,
+    ) -> impl Future<Output = Result<ChatMessage, String>> + Send;
+}
+
 #[derive(Debug, Serialize)]
 struct ChatRequest {
     model: String,
@@ -185,124 +198,133 @@ impl DeepSeekClient {
             .await
             .map_err(|e| format!("Failed to parse response: {}", e))
     }
+}
 
-    pub async fn chat_stream(
+impl LlmClient for DeepSeekClient {
+    fn chat_stream(
         &self,
         messages: &[ChatMessage],
         tools: Option<&[ToolDefinition]>,
         event_tx: mpsc::Sender<StreamEvent>,
-    ) -> Result<ChatMessage, String> {
-        let request = ChatRequest {
-            model: self.model.clone(),
-            messages: messages.to_vec(),
-            tools: tools.map(|t| t.to_vec()),
-            stream: true,
-        };
+    ) -> impl Future<Output = Result<ChatMessage, String>> + Send {
+        let model = self.model.clone();
+        let base_url = self.base_url.clone();
+        let api_key = self.api_key.clone();
+        let client = self.client.clone();
+        let messages = messages.to_vec();
+        let tools_owned = tools.map(|t| t.to_vec());
 
-        let url = format!("{}/v1/chat/completions", self.base_url);
-
-        let response = self
-            .client
-            .post(&url)
-            .header("Authorization", format!("Bearer {}", self.api_key))
-            .json(&request)
-            .send()
-            .await
-            .map_err(|e| format!("HTTP request failed: {}", e))?;
-
-        let status = response.status();
-        if !status.is_success() {
-            let body = response.text().await.unwrap_or_default();
-            return Err(format!("API error ({}): {}", status, body));
-        }
-
-        let mut full_content = String::new();
-        let mut full_reasoning = String::new();
-        let mut pending_tool_calls: std::collections::BTreeMap<usize, ToolCall> =
-            std::collections::BTreeMap::new();
-
-        use tokio_stream::StreamExt;
-        let mut byte_stream = std::pin::pin!(response.bytes_stream());
-        let mut buf = String::new();
-
-        while let Some(chunk_result) = byte_stream.next().await {
-            let bytes = match chunk_result {
-                Ok(b) => b,
-                Err(e) => {
-                    tracing::error!("Stream read error: {}", e);
-                    let _ = event_tx
-                        .send(StreamEvent::Error(format!("Stream error: {}", e)))
-                        .await;
-                    break;
-                }
+        async move {
+            let request = ChatRequest {
+                model,
+                messages,
+                tools: tools_owned,
+                stream: true,
             };
-            buf.push_str(&String::from_utf8_lossy(&bytes));
 
-            while let Some(line_end) = buf.find('\n') {
-                let line = buf[..line_end].trim().to_string();
-                buf = buf[line_end + 1..].to_string();
+            let url = format!("{}/v1/chat/completions", base_url);
 
-                if line.is_empty() || line == "data: [DONE]" {
-                    continue;
-                }
+            let response = client
+                .post(&url)
+                .header("Authorization", format!("Bearer {}", api_key))
+                .json(&request)
+                .send()
+                .await
+                .map_err(|e| format!("HTTP request failed: {}", e))?;
 
-                let json_str = line.strip_prefix("data: ").unwrap_or(&line);
-                let chunk: StreamChunk = match serde_json::from_str(json_str) {
-                    Ok(c) => c,
-                    Err(_) => continue,
-                };
+            let status = response.status();
+            if !status.is_success() {
+                let body = response.text().await.unwrap_or_default();
+                return Err(format!("API error ({}): {}", status, body));
+            }
 
-                for choice in &chunk.choices {
-                    if let Some(ref reasoning) = choice.delta.reasoning_content {
-                        full_reasoning.push_str(reasoning);
+            let mut full_content = String::new();
+            let mut pending_tool_calls: std::collections::BTreeMap<usize, ToolCall> =
+                std::collections::BTreeMap::new();
+
+            use tokio_stream::StreamExt;
+            let mut byte_stream = std::pin::pin!(response.bytes_stream());
+            let mut buf = String::new();
+
+            while let Some(chunk_result) = byte_stream.next().await {
+                let bytes = match chunk_result {
+                    Ok(b) => b,
+                    Err(e) => {
+                        tracing::error!("Stream read error: {}", e);
                         let _ = event_tx
-                            .send(StreamEvent::Reasoning(reasoning.clone()))
+                            .send(StreamEvent::Error(format!("Stream error: {}", e)))
                             .await;
+                        break;
+                    }
+                };
+                buf.push_str(&String::from_utf8_lossy(&bytes));
+
+                while let Some(line_end) = buf.find('\n') {
+                    let line = buf[..line_end].trim().to_string();
+                    buf = buf[line_end + 1..].to_string();
+
+                    if line.is_empty() || line == "data: [DONE]" {
+                        continue;
                     }
 
-                    if let Some(ref content) = choice.delta.content {
-                        full_content.push_str(content);
-                        let _ = event_tx.send(StreamEvent::Content(content.clone())).await;
-                    }
+                    let json_str = line.strip_prefix("data: ").unwrap_or(&line);
+                    let chunk: StreamChunk = match serde_json::from_str(json_str) {
+                        Ok(c) => c,
+                        Err(_) => continue,
+                    };
 
-                    if let Some(ref tcs) = choice.delta.tool_calls {
-                        for tc in tcs {
-                            let update = apply_tool_call_delta(&mut pending_tool_calls, tc.clone());
+                    for choice in &chunk.choices {
+                        if let Some(ref reasoning) = choice.delta.reasoning_content {
+                            let _ = event_tx
+                                .send(StreamEvent::Reasoning(reasoning.clone()))
+                                .await;
+                        }
 
-                            if let Some((id, name)) = update.start {
-                                let _ =
-                                    event_tx.send(StreamEvent::ToolCallStart { id, name }).await;
-                            }
+                        if let Some(ref content) = choice.delta.content {
+                            full_content.push_str(content);
+                            let _ = event_tx.send(StreamEvent::Content(content.clone())).await;
+                        }
 
-                            if let Some(args) = update.arg_delta {
-                                let _ = event_tx.send(StreamEvent::ToolCallArgDelta(args)).await;
+                        if let Some(ref tcs) = choice.delta.tool_calls {
+                            for tc in tcs {
+                                let update =
+                                    apply_tool_call_delta(&mut pending_tool_calls, tc.clone());
+
+                                if let Some((id, name)) = update.start {
+                                    let _ = event_tx
+                                        .send(StreamEvent::ToolCallStart { id, name })
+                                        .await;
+                                }
+
+                                if let Some(args) = update.arg_delta {
+                                    let _ =
+                                        event_tx.send(StreamEvent::ToolCallArgDelta(args)).await;
+                                }
                             }
                         }
                     }
                 }
             }
+
+            let tool_calls: Vec<ToolCall> = pending_tool_calls.into_values().collect();
+
+            let _ = event_tx.send(StreamEvent::Done).await;
+
+            Ok(ChatMessage {
+                role: "assistant".to_string(),
+                content: if full_content.is_empty() {
+                    None
+                } else {
+                    Some(full_content)
+                },
+                tool_calls: if tool_calls.is_empty() {
+                    None
+                } else {
+                    Some(tool_calls)
+                },
+                tool_call_id: None,
+            })
         }
-
-        let tool_calls: Vec<ToolCall> = pending_tool_calls.into_values().collect();
-
-        let _ = event_tx.send(StreamEvent::Done).await;
-
-        let message = ChatMessage {
-            role: "assistant".to_string(),
-            content: if full_content.is_empty() {
-                None
-            } else {
-                Some(full_content)
-            },
-            tool_calls: if tool_calls.is_empty() {
-                None
-            } else {
-                Some(tool_calls)
-            },
-            tool_call_id: None,
-        };
-
-        Ok(message)
     }
 }
 

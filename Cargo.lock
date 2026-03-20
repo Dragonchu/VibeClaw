@@ -1213,6 +1213,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "reloopy-integration-tests"
+version = "0.1.0"
+dependencies = [
+ "reloopy-ipc",
+ "reloopy-peripheral",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "reloopy-ipc"
 version = "0.1.0"
 dependencies = [
