@@ -6,6 +6,7 @@ members = [
     "crates/services/compiler",
     "crates/services/judge",
     "crates/services/audit",
+    "crates/services/admin-web",
     "crates/peripheral",
     "crates/admin",
     "crates/integration-tests",

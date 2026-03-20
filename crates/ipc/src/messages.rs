@@ -435,6 +435,66 @@ pub struct AdminShutdownResponse {
 }
 
 // ---------------------------------------------------------------------------
+// Event streaming message types (AdminWeb / observability)
+// ---------------------------------------------------------------------------
+
+/// AdminWeb → Boot: subscribe to real-time event broadcasts.
+///
+/// Boot will forward matching events to the subscriber as they occur.
+/// Use `event_filter` to select event categories (empty = all events).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EventSubscribe {
+    /// Event categories to subscribe to (e.g. ["compile", "test", "audit", "runlevel"]).
+    /// An empty list subscribes to all event categories.
+    pub event_filter: Vec<String>,
+}
+
+/// Boot → AdminWeb: acknowledgement of event subscription.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EventSubscribeAck {
+    pub accepted: bool,
+    pub subscribed_categories: Vec<String>,
+}
+
+/// Boot → subscribers: incremental compilation progress update.
+///
+/// Emitted while a compile is running to allow progress bars and
+/// streaming log display in AdminWeb.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CompileProgress {
+    pub version: String,
+    /// Stage label (e.g. "building", "linking", "done")
+    pub stage: String,
+    /// Percentage complete (0–100)
+    pub percent: u8,
+    /// Latest compiler output line(s) (may be empty)
+    pub log_line: Option<String>,
+    /// Whether this is the final progress event for this version
+    pub finished: bool,
+}
+
+/// Boot → subscribers: incremental test-run progress update.
+///
+/// Emitted as individual tests complete, letting AdminWeb display
+/// a live pass/fail tally.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TestProgress {
+    pub version: String,
+    /// Stage label (e.g. "invariants", "benchmarks", "scoring")
+    pub stage: String,
+    /// Number of tests completed so far
+    pub completed: u32,
+    /// Total number of tests (may be 0 if unknown)
+    pub total: u32,
+    /// Latest test id that finished (may be empty)
+    pub last_test_id: Option<String>,
+    /// Whether the last finished test passed
+    pub last_test_passed: Option<bool>,
+    /// Whether this is the final progress event for this version
+    pub finished: bool,
+}
+
+// ---------------------------------------------------------------------------
 // Well-known message type constants
 // ---------------------------------------------------------------------------
 
@@ -493,6 +553,11 @@ pub mod msg_types {
     pub const ADMIN_AUDIT_QUERY_RESPONSE: &str = "AdminAuditQueryResponse";
     pub const ADMIN_SHUTDOWN_REQUEST: &str = "AdminShutdownRequest";
     pub const ADMIN_SHUTDOWN_RESPONSE: &str = "AdminShutdownResponse";
+
+    pub const EVENT_SUBSCRIBE: &str = "EventSubscribe";
+    pub const EVENT_SUBSCRIBE_ACK: &str = "EventSubscribeAck";
+    pub const COMPILE_PROGRESS: &str = "CompileProgress";
+    pub const TEST_PROGRESS: &str = "TestProgress";
 }
 
 /// Check if a message type is a core type that Boot should handle itself.
@@ -547,5 +612,9 @@ pub fn is_core_message(msg_type: &str) -> bool {
             | msg_types::ADMIN_AUDIT_QUERY_RESPONSE
             | msg_types::ADMIN_SHUTDOWN_REQUEST
             | msg_types::ADMIN_SHUTDOWN_RESPONSE
+            | msg_types::EVENT_SUBSCRIBE
+            | msg_types::EVENT_SUBSCRIBE_ACK
+            | msg_types::COMPILE_PROGRESS
+            | msg_types::TEST_PROGRESS
     )
 }
