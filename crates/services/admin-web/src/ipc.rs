@@ -12,24 +12,27 @@ use reloopy_ipc::messages::{Envelope, msg_types};
 use reloopy_ipc::wire;
 
 static MSG_COUNTER: AtomicU64 = AtomicU64::new(1);
-const IDENTITY: &str = "admin-web";
+pub const IDENTITY: &str = "admin-web";
+pub const EVENTS_IDENTITY: &str = "admin-web-events";
 
-fn next_id() -> String {
-    format!("{}-{}", IDENTITY, MSG_COUNTER.fetch_add(1, Ordering::Relaxed))
+fn next_id(identity: &str) -> String {
+    format!("{}-{}", identity, MSG_COUNTER.fetch_add(1, Ordering::Relaxed))
 }
 
 pub struct AdminWebIpc {
     reader: tokio::io::BufReader<tokio::net::unix::OwnedReadHalf>,
     writer: tokio::net::unix::OwnedWriteHalf,
+    identity: String,
 }
 
 impl AdminWebIpc {
-    pub async fn connect(socket_path: &PathBuf) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+    pub async fn connect(socket_path: &PathBuf, identity: &str) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         let stream = UnixStream::connect(socket_path).await?;
         let (read_half, write_half) = stream.into_split();
         let mut client = Self {
             reader: tokio::io::BufReader::new(read_half),
             writer: write_half,
+            identity: identity.to_string(),
         };
         client.handshake().await?;
         Ok(client)
@@ -37,10 +40,10 @@ impl AdminWebIpc {
 
     async fn handshake(&mut self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let hello = Envelope {
-            from: IDENTITY.to_string(),
+            from: self.identity.clone(),
             to: "boot".to_string(),
             msg_type: msg_types::HELLO.to_string(),
-            id: next_id(),
+            id: next_id(&self.identity),
             payload: serde_json::to_value(&reloopy_ipc::messages::Hello {
                 protocol_version: "1.0".to_string(),
                 capabilities: serde_json::json!(["admin"]),
@@ -64,9 +67,9 @@ impl AdminWebIpc {
         msg_type: &str,
         payload: serde_json::Value,
     ) -> Result<Envelope, Box<dyn std::error::Error + Send + Sync>> {
-        let id = next_id();
+        let id = next_id(&self.identity);
         let envelope = Envelope {
-            from: IDENTITY.to_string(),
+            from: self.identity.clone(),
             to: "boot".to_string(),
             msg_type: msg_type.to_string(),
             id: id.clone(),
@@ -100,9 +103,9 @@ impl AdminWebIpc {
         event_filter: Vec<String>,
     ) -> Result<tokio::sync::mpsc::Receiver<Envelope>, Box<dyn std::error::Error + Send + Sync>> {
         // Send EventSubscribe
-        let id = next_id();
+        let id = next_id(&self.identity);
         let envelope = Envelope {
-            from: IDENTITY.to_string(),
+            from: self.identity.clone(),
             to: "boot".to_string(),
             msg_type: msg_types::EVENT_SUBSCRIBE.to_string(),
             id,
