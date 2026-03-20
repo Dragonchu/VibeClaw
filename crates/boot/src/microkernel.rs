@@ -64,6 +64,7 @@ impl CapabilityRegistry {
             "peripheral" => Some(&["agent"]),
             "admin" => Some(&["admin"]),
             "admin-web" => Some(&["admin"]),
+            "admin-web-events" => Some(&["admin"]),
             _ => None,
         }
     }

@@ -27,7 +27,7 @@ use tokio_stream::wrappers::ReceiverStream;
 use reloopy_ipc::messages::{self, msg_types};
 
 use crate::AppState;
-use crate::ipc::AdminWebIpc;
+use crate::ipc::{AdminWebIpc, EVENTS_IDENTITY};
 
 const INDEX_HTML: &str = include_str!("static/index.html");
 
@@ -230,7 +230,7 @@ async fn events_sse(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let (tx, rx) = tokio::sync::mpsc::channel::<Result<Event, std::convert::Infallible>>(256);
 
     tokio::spawn(async move {
-        let stream_ipc = match AdminWebIpc::connect(&sock_path).await {
+        let stream_ipc = match AdminWebIpc::connect(&sock_path, EVENTS_IDENTITY).await {
             Ok(c) => c,
             Err(e) => {
                 let msg = serde_json::json!({"error": e.to_string()}).to_string();

@@ -71,7 +71,7 @@ async fn main() {
         "AdminWeb starting"
     );
 
-    let ipc = match AdminWebIpc::connect(&config.sock_path).await {
+    let ipc = match AdminWebIpc::connect(&config.sock_path, ipc::IDENTITY).await {
         Ok(c) => c,
         Err(e) => {
             tracing::error!(
