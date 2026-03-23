@@ -6,11 +6,12 @@
 <title>Reloopy Admin</title>
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
-  body { font-family: 'SF Mono', 'Fira Code', monospace; background: #0d1117; color: #c9d1d9; min-height: 100vh; }
-  header { background: #161b22; border-bottom: 1px solid #30363d; padding: 12px 24px; display: flex; align-items: center; gap: 16px; }
+  body { font-family: 'SF Mono', 'Fira Code', monospace; background: #0d1117; color: #c9d1d9; min-height: 100vh; display: flex; flex-direction: column; }
+  header { background: #161b22; border-bottom: 1px solid #30363d; padding: 12px 24px; display: flex; align-items: center; gap: 16px; flex-shrink: 0; }
   header h1 { font-size: 1.1rem; color: #58a6ff; }
-  header nav a { color: #8b949e; text-decoration: none; margin-left: 16px; font-size: 0.9rem; }
+  header nav a { color: #8b949e; text-decoration: none; margin-left: 16px; font-size: 0.9rem; cursor: pointer; }
   header nav a:hover { color: #c9d1d9; }
+  header nav a.nav-active { color: #58a6ff; }
   .container { max-width: 1200px; margin: 24px auto; padding: 0 24px; }
   .card { background: #161b22; border: 1px solid #30363d; border-radius: 6px; padding: 16px; margin-bottom: 16px; }
   .card h2 { font-size: 0.85rem; color: #8b949e; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 12px; }
@@ -30,15 +31,14 @@
   tr:last-child td { border-bottom: none; }
   button { background: #238636; color: #fff; border: none; border-radius: 4px; padding: 6px 14px; cursor: pointer; font-size: 0.8rem; font-family: inherit; }
   button:hover { background: #2ea043; }
-  button.danger { background: #da3633; }
-  button.danger:hover { background: #f85149; }
   button.secondary { background: #21262d; color: #c9d1d9; border: 1px solid #30363d; }
   button.secondary:hover { background: #30363d; }
-  .tab-bar { display: flex; gap: 4px; margin-bottom: 16px; }
-  .tab { padding: 6px 14px; border-radius: 4px; cursor: pointer; font-size: 0.82rem; color: #8b949e; background: #21262d; border: 1px solid #30363d; }
-  .tab.active { background: #0c2d6b; color: #58a6ff; border-color: #388bfd; }
   .section { display: none; }
   .section.active { display: block; }
+  #section-agent { flex: 1; }
+  #section-agent.active { display: flex; flex-direction: column; }
+  #agent-frame { flex: 1; border: none; background: #0d1117; min-height: 500px; }
+  #agent-banner { background: #0c2d6b; color: #58a6ff; text-align: center; padding: 8px; font-size: 0.82rem; display: none; flex-shrink: 0; }
   #toast { position: fixed; bottom: 24px; right: 24px; background: #21262d; border: 1px solid #30363d; border-radius: 6px; padding: 10px 16px; font-size: 0.82rem; display: none; z-index: 999; }
 </style>
 </head>
@@ -46,19 +46,25 @@
 <header>
   <h1>🔄 Reloopy Admin</h1>
   <nav>
-    <a href="#" onclick="showTab('dashboard')">Dashboard</a>
-    <a href="#" onclick="showTab('versions')">Versions</a>
-    <a href="#" onclick="showTab('peers')">Peers</a>
-    <a href="/agent" target="_blank">Agent →</a>
+    <a onclick="showTab('agent')" class="nav-active">Agent</a>
+    <a onclick="showTab('dashboard')">Dashboard</a>
+    <a onclick="showTab('versions')">Versions</a>
+    <a onclick="showTab('peers')">Peers</a>
   </nav>
-  <span id="runlevel-badge" class="badge badge-gray" style="margin-left:auto">…</span>
-  <button class="secondary" onclick="refresh()" style="margin-left:8px">↻ Refresh</button>
+  <span id="version-badge" class="badge badge-gray" style="margin-left:auto">…</span>
+  <span id="runlevel-badge" class="badge badge-gray">…</span>
 </header>
 
-<div class="container">
+<div id="agent-banner">🔄 Evolved to <span id="banner-version"></span> — reloading agent…</div>
 
-  <!-- Dashboard Tab -->
-  <div id="tab-dashboard" class="section active">
+<!-- Agent Tab (default, full-height iframe) -->
+<div id="section-agent" class="section active">
+  <iframe id="agent-frame" src="about:blank"></iframe>
+</div>
+
+<!-- Admin Tabs (wrapped in container) -->
+<div class="container">
+  <div id="tab-dashboard" class="section">
     <div class="grid" style="margin-bottom:16px">
       <div class="stat"><div class="stat-value" id="stat-version">—</div><div class="stat-label">Current Version</div></div>
       <div class="stat"><div class="stat-value" id="stat-rollback">—</div><div class="stat-label">Rollback Target</div></div>
@@ -67,39 +73,40 @@
     </div>
   </div>
 
-  <!-- Versions Tab -->
   <div id="tab-versions" class="section">
     <div class="card">
       <h2>Versions <button onclick="loadVersions()" class="secondary" style="float:right">↻</button></h2>
-      <table id="versions-table">
-        <thead><tr><th>Version</th><th>Status</th><th>Actions</th></tr></thead>
-        <tbody id="versions-body"></tbody>
-      </table>
+      <table><thead><tr><th>Version</th><th>Status</th><th>Actions</th></tr></thead><tbody id="versions-body"></tbody></table>
     </div>
   </div>
 
-  <!-- Peers Tab -->
   <div id="tab-peers" class="section">
     <div class="card">
       <h2>Lease Status <button onclick="loadPeers()" class="secondary" style="float:right">↻</button></h2>
-      <table id="peers-table">
-        <thead><tr><th>Peer</th><th>Status</th><th>Probation</th><th>CPU %</th><th>Mem MB</th></tr></thead>
-        <tbody id="peers-body"></tbody>
-      </table>
+      <table><thead><tr><th>Peer</th><th>Status</th><th>Probation</th><th>CPU %</th><th>Mem MB</th></tr></thead><tbody id="peers-body"></tbody></table>
     </div>
   </div>
-
 </div>
 
 <div id="toast"></div>
 
 <script>
+let agentUrl = null;
+let lastVersion = null;
+const BYTES_PER_MB = 1048576;
+
 // ---------------------------------------------------------------------------
 // Tab switching
 // ---------------------------------------------------------------------------
 function showTab(name) {
   document.querySelectorAll('.section').forEach(el => el.classList.remove('active'));
-  document.getElementById('tab-' + name).classList.add('active');
+  if (name === 'agent') {
+    document.getElementById('section-agent').classList.add('active');
+  } else {
+    document.getElementById('tab-' + name).classList.add('active');
+  }
+  document.querySelectorAll('header nav a').forEach(a => a.classList.remove('nav-active'));
+  document.querySelector('header nav a[onclick*="' + name + '"]').classList.add('nav-active');
   if (name === 'versions') loadVersions();
   if (name === 'peers') loadPeers();
 }
@@ -113,7 +120,32 @@ function toast(msg, error) {
 }
 
 // ---------------------------------------------------------------------------
-// Status / dashboard
+// Agent iframe
+// ---------------------------------------------------------------------------
+async function initAgent() {
+  try {
+    const r = await fetch('/api/agent-url');
+    const d = await r.json();
+    agentUrl = d.url;
+    document.getElementById('agent-frame').src = agentUrl;
+  } catch(e) { console.warn('Failed to load agent URL:', e); }
+}
+
+function reloadAgent() {
+  if (!agentUrl) return;
+  const banner = document.getElementById('agent-banner');
+  const bannerVer = document.getElementById('banner-version');
+  bannerVer.textContent = lastVersion;
+  banner.style.display = 'block';
+  // Brief delay to let new peripheral start, then reload
+  setTimeout(() => {
+    document.getElementById('agent-frame').src = agentUrl + '?v=' + Date.now();
+    setTimeout(() => { banner.style.display = 'none'; }, 2000);
+  }, 1500);
+}
+
+// ---------------------------------------------------------------------------
+// Status polling + version change detection
 // ---------------------------------------------------------------------------
 async function loadStatus() {
   try {
@@ -124,16 +156,27 @@ async function loadStatus() {
     document.getElementById('stat-rollback').textContent = d.rollback_version || '—';
     document.getElementById('stat-peers').textContent = (d.connected_peers || []).join(', ') || '—';
     document.getElementById('stat-probation').textContent = d.probation_active ? 'Active ⚠️' : 'None';
+
+    // Version badge in header
+    const vb = document.getElementById('version-badge');
+    vb.textContent = d.current_version || '—';
+    vb.className = 'badge badge-blue';
+
+    // Runlevel badge
     const rl = d.runlevel;
     const badge = document.getElementById('runlevel-badge');
     const labels = {0: 'Halt', 1: 'Safe', 2: 'Normal', 3: 'Evolve'};
     const cls = {0: 'badge-red', 1: 'badge-yellow', 2: 'badge-green', 3: 'badge-blue'};
-    badge.textContent = (labels[rl] || 'Unknown') + ' (' + rl + ')';
+    badge.textContent = (labels[rl] || '?') + ' (' + rl + ')';
     badge.className = 'badge ' + (cls[rl] || 'badge-gray');
+
+    // Detect version change → auto-reload agent iframe
+    if (lastVersion && d.current_version && d.current_version !== lastVersion) {
+      reloadAgent();
+    }
+    lastVersion = d.current_version || lastVersion;
   } catch(e) { console.warn('Status fetch failed:', e); }
 }
-
-function refresh() { loadStatus(); }
 
 // ---------------------------------------------------------------------------
 // Versions tab
@@ -249,9 +292,9 @@ async function loadPeers() {
 }
 
 // ---------------------------------------------------------------------------
-// Polling
+// Boot
 // ---------------------------------------------------------------------------
-const BYTES_PER_MB = 1048576;
+initAgent();
 loadStatus();
 setInterval(loadStatus, 3000);
 </script>

@@ -7,14 +7,14 @@
 //!   GET  /api/versions/{ver}  — version detail
 //!   POST /api/rollback        — trigger rollback
 //!   GET  /api/peers           — lease / peer info
-//!   GET  /agent               — redirect to peripheral HTTP server
+//!   GET  /api/agent-url       — peripheral HTTP URL for iframe embedding
 
 use std::sync::Arc;
 
 use axum::Router;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
-use axum::response::{Html, IntoResponse, Redirect};
+use axum::response::{Html, IntoResponse};
 use axum::routing::{get, post};
 use serde::Deserialize;
 
@@ -32,7 +32,7 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/api/versions/{ver}", get(api_version_detail))
         .route("/api/rollback", post(api_rollback))
         .route("/api/peers", get(api_peers))
-        .route("/agent", get(agent_redirect))
+        .route("/api/agent-url", get(api_agent_url))
         .with_state(state)
 }
 
@@ -40,8 +40,8 @@ async fn index() -> impl IntoResponse {
     Html(INDEX_HTML)
 }
 
-async fn agent_redirect(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    Redirect::temporary(&state.peripheral_url)
+async fn api_agent_url(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    axum::Json(serde_json::json!({ "url": state.peripheral_url }))
 }
 
 // ---------------------------------------------------------------------------
