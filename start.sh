@@ -186,11 +186,29 @@ ok "Build complete."
 
 # ── stop previous instances ───────────────────────────────────────────────────
 RELOOPY_SOCK="${RELOOPY_SOCKET:-${RELOOPY_DIR}/reloopy.sock}"
+RELOOPY_LOCK="${RELOOPY_DIR}/boot.lock"
 
 stop_existing() {
+    # Quick check: is there actually a Boot process alive?
+    # We probe the flock — if we CAN acquire it, no Boot is running.
+    if [[ -f "$RELOOPY_LOCK" ]]; then
+        if (flock -n 9) 9<"$RELOOPY_LOCK" 2>/dev/null; then
+            # Lock acquired → no Boot process running; just clean up stale socket.
+            if [[ -S "$RELOOPY_SOCK" ]]; then
+                info "Stale socket detected (no Boot process running) — removing."
+                rm -f "$RELOOPY_SOCK"
+            fi
+            return
+        fi
+    elif [[ ! -S "$RELOOPY_SOCK" ]]; then
+        # No lock file AND no socket → nothing to clean up.
+        return
+    fi
+
+    # Boot is alive (or at least the socket exists). Try graceful shutdown.
     if [[ -S "$RELOOPY_SOCK" ]]; then
         info "Existing system detected — requesting graceful shutdown via reloopy-admin…"
-        if "${SCRIPT_DIR}/target/release/reloopy-admin" --socket "$RELOOPY_SOCK" shutdown 2>/dev/null; then
+        if timeout 5 "${SCRIPT_DIR}/target/release/reloopy-admin" --socket "$RELOOPY_SOCK" shutdown 2>/dev/null; then
             ok "Shutdown command accepted. Waiting for socket to disappear…"
             local waited=0
             while [[ -S "$RELOOPY_SOCK" ]] && [[ "$waited" -lt 10 ]]; do
@@ -204,7 +222,7 @@ stop_existing() {
                 ok "Old system exited cleanly."
             fi
         else
-            warn "reloopy-admin shutdown failed (boot may have already exited). Continuing…"
+            warn "reloopy-admin shutdown failed or timed out. Cleaning up…"
             rm -f "$RELOOPY_SOCK"
         fi
     fi
@@ -216,8 +234,8 @@ PIDS=()
 cleanup() {
     echo ""
     info "Shutting down…"
-    # Use reloopy-admin for graceful shutdown (boot broadcasts to all peers)
-    "${SCRIPT_DIR}/target/release/reloopy-admin" --socket "$RELOOPY_SOCK" shutdown 2>/dev/null || true
+    # Use reloopy-admin for graceful shutdown (with timeout to avoid hanging)
+    timeout 5 "${SCRIPT_DIR}/target/release/reloopy-admin" --socket "$RELOOPY_SOCK" shutdown 2>/dev/null || true
     # Fallback: kill any remaining child processes
     if [[ ${#PIDS[@]} -gt 0 ]]; then
         sleep 2
