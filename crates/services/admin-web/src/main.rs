@@ -89,6 +89,22 @@ async fn main() {
         sock_path: config.sock_path.clone(),
     });
 
+    // Keep Boot lease alive — admin-web must heartbeat just like any other peer.
+    let heartbeat_state = state.clone();
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(8));
+        interval.tick().await; // skip the immediate first tick
+        loop {
+            interval.tick().await;
+            let mut ipc = heartbeat_state.ipc.lock().await;
+            if let Err(e) = ipc.heartbeat().await {
+                tracing::warn!("Heartbeat failed, admin-web will lose its Boot lease: {}", e);
+                break;
+            }
+            tracing::trace!("Heartbeat sent");
+        }
+    });
+
     let app = build_router(state);
 
     let listener = tokio::net::TcpListener::bind(config.http_addr).await.unwrap_or_else(|e| {

@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use tokio::net::UnixStream;
 
-use reloopy_ipc::messages::{Envelope, msg_types};
+use reloopy_ipc::messages::{Envelope, HealthReport, LeaseRenew, msg_types};
 use reloopy_ipc::wire;
 
 static MSG_COUNTER: AtomicU64 = AtomicU64::new(1);
@@ -85,6 +85,19 @@ impl AdminWebIpc {
             Ok(Err(e)) => Err(e),
             Err(_) => Err("Request timed out".into()),
         }
+    }
+
+    /// Send a LeaseRenew heartbeat to keep the Boot lease alive.
+    pub async fn heartbeat(&mut self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let health = HealthReport {
+            runlevel: 2,
+            memory_bytes: 0,
+            cpu_percent: 0.0,
+            tasks_processed: 0,
+        };
+        let payload = serde_json::to_value(&LeaseRenew { health })?;
+        self.request(msg_types::LEASE_RENEW, payload).await?;
+        Ok(())
     }
 
     /// Subscribe to events and return a receiving channel for streamed events.
