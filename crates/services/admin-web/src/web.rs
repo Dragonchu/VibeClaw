@@ -163,12 +163,12 @@ async fn api_quick_evolve(State(state): State<Arc<AppState>>) -> axum::response:
         }
     };
 
-    if version != "V0" {
+    if !version.is_empty() && version != "V0" {
         return (
             StatusCode::CONFLICT,
             axum::Json(serde_json::json!({
                 "success": false,
-                "error": "Quick evolution is only available on V0 (fresh install)"
+                "error": "Quick evolution is only available on V0 or fresh install"
             })),
         ).into_response();
     }

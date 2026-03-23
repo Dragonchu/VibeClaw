@@ -309,7 +309,8 @@ async function loadPeers() {
 // ---------------------------------------------------------------------------
 function updateQuickEvolveCard() {
   const wrapper = document.getElementById('quick-evolve-wrapper');
-  if (lastVersion === 'V0') {
+  // Show on fresh install (null) or V0 (initialized but never evolved).
+  if (!lastVersion || lastVersion === 'V0') {
     wrapper.style.display = 'block';
   } else {
     wrapper.style.display = 'none';
