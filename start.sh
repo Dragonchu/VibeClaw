@@ -26,40 +26,39 @@ prefix_log() {
     done
 }
 
-# _launch_bg: start a service in the background and return its PID.
+# _launch_bg: start a service in the background.
 #
-# In normal mode  → stdout/stderr redirected to the log file only.
-# In dev mode     → stdout/stderr is piped through prefix_log (terminal)
-#                   AND appended to the log file via tee.
+# Sets the global LAST_PID to the PID of the actual service process.
+# The pipeline must be started directly in the calling shell (NOT inside $())
+# so that the shell's job table tracks it and `wait` at script end blocks
+# until all services exit.
 #
-# Usage: PID=$( _launch_bg <log-name> <label> <color> <cmd> [args…] )
+# Usage: _launch_bg <log-name> <label> <color> <cmd> [args…]
+#        PID=$LAST_PID
 _launch_bg() {
     local name="$1" label="$2" color="$3"
     shift 3
     local log="${LOG_DIR}/${name}.log"
 
     if [[ "$DEV_MODE" -eq 1 ]]; then
-        # Use `bash -c 'echo $$; exec ...'` instead of $BASHPID so this works
-        # on bash 3.2 (macOS default). $$  inside a child process is its own PID;
-        # exec then replaces that process with the service binary, keeping the PID.
+        # bash -c writes its own PID ($$) before exec-ing the service binary,
+        # so the PID survives the exec and can be used for kill/check_alive.
+        # > /dev/tty bypasses the parent shell's stdout so log lines appear on
+        # the terminal even when the caller has redirected stdout elsewhere.
         local pid_file
         pid_file=$(mktemp)
-        # Redirect tee's stdout to /dev/tty so it goes to the terminal directly,
-        # NOT into the $(...) command-substitution capture. Without this, the
-        # capture pipe stays open as long as the service runs, blocking forever.
         bash -c 'echo $$ > "$1"; exec "${@:2}"' _ "$pid_file" "$@" \
             2>&1 | prefix_log "$label" "$color" | tee -a "$log" > /dev/tty &
-        # Wait up to 1 s for the child to write its PID.
         local retries=0
         while [[ ! -s "$pid_file" ]] && (( retries < 20 )); do
             sleep 0.05
             (( retries++ )) || true
         done
-        cat "$pid_file"
+        LAST_PID=$(cat "$pid_file")
         rm -f "$pid_file"
     else
         "$@" > "$log" 2>&1 &
-        echo $!
+        LAST_PID=$!
     fi
 }
 
@@ -241,9 +240,10 @@ check_alive() {
 
 # ── reloopy-boot ────────────────────────────────────────────────────────────────
 info "Starting reloopy-boot…"
-BOOT_PID=$( RUST_LOG="${RUST_LOG:-info}" \
-    _launch_bg "boot" "boot" "$CYAN" \
-    "${SCRIPT_DIR}/target/release/reloopy-boot" )
+_launch_bg "boot" "boot" "$CYAN" \
+    env RUST_LOG="${RUST_LOG:-info}" \
+    "${SCRIPT_DIR}/target/release/reloopy-boot"
+BOOT_PID=$LAST_PID
 PIDS+=($BOOT_PID)
 sleep 1
 check_alive "reloopy-boot" "$BOOT_PID" "${LOG_DIR}/boot.log"
@@ -251,9 +251,10 @@ ok "reloopy-boot running  (pid ${BOOT_PID}, log: .reloopy/logs/boot.log)"
 
 # ── reloopy-compiler ────────────────────────────────────────────────────────────
 info "Starting reloopy-compiler…"
-COMPILER_PID=$( RUST_LOG="${RUST_LOG:-info}" \
-    _launch_bg "compiler" "compiler" "$GREEN" \
-    "${SCRIPT_DIR}/target/release/reloopy-compiler" )
+_launch_bg "compiler" "compiler" "$GREEN" \
+    env RUST_LOG="${RUST_LOG:-info}" \
+    "${SCRIPT_DIR}/target/release/reloopy-compiler"
+COMPILER_PID=$LAST_PID
 PIDS+=($COMPILER_PID)
 sleep 1
 check_alive "reloopy-compiler" "$COMPILER_PID" "${LOG_DIR}/compiler.log"
@@ -261,9 +262,10 @@ ok "reloopy-compiler running  (pid ${COMPILER_PID}, log: .reloopy/logs/compiler.
 
 # ── reloopy-admin-web ──────────────────────────────────────────────────────────
 info "Starting reloopy-admin-web (dashboard)…"
-ADMIN_WEB_PID=$( RUST_LOG="${RUST_LOG:-info}" \
-    _launch_bg "admin-web" "admin-web" "$MAGENTA" \
-    "${SCRIPT_DIR}/target/release/reloopy-admin-web" )
+_launch_bg "admin-web" "admin-web" "$MAGENTA" \
+    env RUST_LOG="${RUST_LOG:-info}" \
+    "${SCRIPT_DIR}/target/release/reloopy-admin-web"
+ADMIN_WEB_PID=$LAST_PID
 PIDS+=($ADMIN_WEB_PID)
 sleep 1
 check_alive "reloopy-admin-web" "$ADMIN_WEB_PID" "${LOG_DIR}/admin-web.log"
@@ -273,10 +275,11 @@ ok "reloopy-admin-web running  (pid ${ADMIN_WEB_PID}, log: .reloopy/logs/admin-w
 # ── reloopy-peripheral ─────────────────────────────────────────────────────────
 if [[ "${SKIP_PERIPHERAL}" -eq 0 ]]; then
     info "Starting reloopy-peripheral…"
-    PERIPHERAL_PID=$( RUST_LOG="${RUST_LOG:-info}" \
-        DEEPSEEK_API_KEY="${DEEPSEEK_API_KEY}" \
-        _launch_bg "peripheral" "peripheral" "$BLUE" \
-        "${SCRIPT_DIR}/target/release/reloopy-peripheral" )
+    _launch_bg "peripheral" "peripheral" "$BLUE" \
+        env RUST_LOG="${RUST_LOG:-info}" \
+            DEEPSEEK_API_KEY="${DEEPSEEK_API_KEY}" \
+        "${SCRIPT_DIR}/target/release/reloopy-peripheral"
+    PERIPHERAL_PID=$LAST_PID
     PIDS+=($PERIPHERAL_PID)
     sleep 2
     check_alive "reloopy-peripheral" "$PERIPHERAL_PID" "${LOG_DIR}/peripheral.log"
