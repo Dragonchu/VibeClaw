@@ -40,6 +40,7 @@ impl AdminClient {
             payload: serde_json::to_value(&reloopy_ipc::messages::Hello {
                 protocol_version: "1.0".to_string(),
                 capabilities: serde_json::json!(["admin"]),
+                http_port: None,
             })?,
             fds: Vec::new(),
         };

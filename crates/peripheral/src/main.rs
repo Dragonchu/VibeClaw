@@ -15,7 +15,7 @@ use std::time::Duration;
 use tokio::net::TcpListener;
 use tokio::sync::{Mutex, mpsc};
 
-use reloopy_ipc::messages::{self, Envelope, msg_types};
+use reloopy_ipc::messages::{Envelope, msg_types};
 use reloopy_ipc::LogErr;
 
 use crate::agent::Agent;
@@ -25,7 +25,7 @@ use crate::memory::MemoryManager;
 use crate::source::SourceManager;
 use crate::web::AppState;
 
-const DEFAULT_HTTP_PORT: u16 = 7700;
+const DEFAULT_HTTP_PORT: u16 = 0;
 
 struct Config {
     sock_path: PathBuf,
@@ -34,7 +34,6 @@ struct Config {
     api_key: String,
     api_base_url: Option<String>,
     model: Option<String>,
-    http_port: u16,
     base_dir: PathBuf,
 }
 
@@ -58,11 +57,6 @@ impl Config {
         let api_base_url = std::env::var("DEEPSEEK_BASE_URL").ok();
         let model = std::env::var("DEEPSEEK_MODEL").ok();
 
-        let http_port = std::env::var("RELOOPY_HTTP_PORT")
-            .ok()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(DEFAULT_HTTP_PORT);
-
         Ok(Self {
             sock_path,
             workspace_root,
@@ -70,7 +64,6 @@ impl Config {
             api_key,
             api_base_url,
             model,
-            http_port,
             base_dir,
         })
     }
@@ -142,11 +135,29 @@ async fn main() {
     tracing::info!(
         workspace = %config.workspace_root.display(),
         sock = %config.sock_path.display(),
-        http_port = config.http_port,
         "reloopy-peripheral starting"
     );
 
-    let ipc = match ipc_client::connect_and_handshake(&config.sock_path).await {
+    // Bind HTTP listener first (always OS-assigned port) so we can report
+    // the actual port to Boot during handshake.
+    let std_listener = {
+        let addr = std::net::SocketAddr::from(([0, 0, 0, 0], DEFAULT_HTTP_PORT));
+        match std::net::TcpListener::bind(addr) {
+            Ok(l) => l,
+            Err(e) => {
+                tracing::error!("Failed to bind HTTP listener: {}", e);
+                std::process::exit(1);
+            }
+        }
+    };
+    std_listener
+        .set_nonblocking(true)
+        .unwrap_or_else(|e| tracing::warn!("Failed to set listener nonblocking: {}", e));
+
+    let actual_port = std_listener.local_addr().map(|a| a.port()).ok();
+    tracing::info!(http_port = ?actual_port, "HTTP listener bound");
+
+    let ipc = match ipc_client::connect_and_handshake(&config.sock_path, actual_port).await {
         Ok(handle) => handle,
         Err(e) => {
             tracing::error!("Failed to connect to Boot: {}", e);
@@ -158,15 +169,7 @@ async fn main() {
     let source = SourceManager::new(config.workspace_root);
     let memory = MemoryManager::new(&config.base_dir);
 
-    run(
-        deepseek,
-        source,
-        memory,
-        ipc,
-        config.heartbeat_interval,
-        config.http_port,
-    )
-    .await;
+    run(deepseek, source, memory, ipc, config.heartbeat_interval, std_listener).await;
 }
 
 async fn run(
@@ -175,11 +178,10 @@ async fn run(
     memory: MemoryManager,
     ipc: IpcHandle,
     heartbeat_interval: Duration,
-    http_port: u16,
+    std_listener: std::net::TcpListener,
 ) {
     let ipc_tx = ipc.tx;
     let runlevel = ipc.runlevel;
-    let inherited_listener = ipc.inherited_listener;
 
     let heartbeat_tx = ipc_tx.clone();
     tokio::spawn(async move {
@@ -196,57 +198,9 @@ async fn run(
     let (update_result_tx, update_result_rx) = mpsc::channel::<Envelope>(4);
     let shutdown_notify = Arc::new(tokio::sync::Notify::new());
 
-    // Create the HTTP listener early so the IPC handler can reference it for
-    // the hot-swap handoff (PrepareHandoff → HandoffReady FD passing).
-    let std_listener = if let Some(fd) = inherited_listener {
-        #[cfg(unix)]
-        {
-            use std::os::unix::io::FromRawFd;
-            use std::os::unix::io::IntoRawFd;
-
-            let raw = fd.into_raw_fd();
-            let std_listener = unsafe { std::net::TcpListener::from_raw_fd(raw) };
-            tracing::info!("Using inherited HTTP listener fd");
-            std_listener
-        }
-        #[cfg(not(unix))]
-        {
-            tracing::error!("Inherited listener not supported on non-Unix platforms");
-            std::process::exit(1);
-        }
-    } else {
-        let addr = std::net::SocketAddr::from(([0, 0, 0, 0], http_port));
-        match std::net::TcpListener::bind(addr) {
-            Ok(l) => l,
-            Err(e) => {
-                tracing::warn!(
-                    "Failed to bind HTTP on {}: {}; falling back to OS-assigned port",
-                    addr,
-                    e
-                );
-                let fallback = std::net::SocketAddr::from(([0, 0, 0, 0], 0u16));
-                match std::net::TcpListener::bind(fallback) {
-                    Ok(l) => l,
-                    Err(e2) => {
-                        tracing::error!("Failed to bind HTTP on fallback port: {}", e2);
-                        std::process::exit(1);
-                    }
-                }
-            }
-        }
-    };
-
-    std_listener
-        .set_nonblocking(true)
-        .unwrap_or_else(|e| tracing::warn!("Failed to set listener nonblocking: {}", e));
-
-    let std_listener = Arc::new(std_listener);
-
     let shutdown_for_ipc = shutdown_notify.clone();
     let message_tx = update_result_tx.clone();
     let mut ipc_rx = ipc.rx;
-    let ipc_tx_for_ipc = ipc_tx.clone();
-    let listener_for_ipc = std_listener.clone();
     tokio::spawn(async move {
         while let Some(envelope) = ipc_rx.recv().await {
             match envelope.msg_type.as_str() {
@@ -267,42 +221,6 @@ async fn run(
                 msg_types::RUNLEVEL_CHANGE => {
                     tracing::info!("Runlevel change: {}", envelope.payload);
                 }
-                msg_types::PREPARE_HANDOFF => {
-                    tracing::info!("PrepareHandoff received — sending listener fd");
-                    #[cfg(unix)]
-                    {
-                        use std::os::unix::io::{FromRawFd, IntoRawFd, OwnedFd};
-
-                        let duplicate: std::net::TcpListener =
-                            match listener_for_ipc.try_clone() {
-                                Ok(l) => l,
-                                Err(e) => {
-                                    tracing::error!(
-                                        "Failed to clone listener for handoff: {}",
-                                        e
-                                    );
-                                    continue;
-                                }
-                            };
-                        let fd = duplicate.into_raw_fd();
-                        unsafe {
-                            let flags = libc::fcntl(fd, libc::F_GETFD);
-                            if flags >= 0 {
-                                let _ = libc::fcntl(fd, libc::F_SETFD, flags & !libc::FD_CLOEXEC);
-                            }
-                        }
-                        let handoff = Envelope {
-                            from: "peripheral".to_string(),
-                            to: "boot".to_string(),
-                            msg_type: msg_types::HANDOFF_READY.to_string(),
-                            id: ipc_client::new_msg_id(),
-                            payload: serde_json::to_value(&messages::HandoffReady)
-                                .unwrap_or_default(),
-                            fds: vec![Arc::new(unsafe { OwnedFd::from_raw_fd(fd) })],
-                        };
-                        ipc_tx_for_ipc.send(handoff).await.warn_err();
-                    }
-                }
                 msg_types::UPDATE_ACCEPTED | msg_types::UPDATE_REJECTED => {
                     message_tx.send(envelope).await.warn_err();
                 }
@@ -321,7 +239,7 @@ async fn run(
 
     let router = web::build_router(app_state);
 
-    let listener = match TcpListener::from_std((*std_listener).try_clone().unwrap()) {
+    let listener = match TcpListener::from_std(std_listener) {
         Ok(l) => l,
         Err(e) => {
             tracing::error!("Failed to adopt listener: {}", e);

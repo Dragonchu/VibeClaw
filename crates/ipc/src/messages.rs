@@ -45,6 +45,10 @@ pub struct Envelope {
 pub struct Hello {
     pub protocol_version: String,
     pub capabilities: serde_json::Value,
+    /// HTTP port the peer is listening on (peripheral reports this so Boot can
+    /// relay it to AdminWeb for iframe embedding).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub http_port: Option<u16>,
 }
 
 /// Handshake response: Boot → Peripheral/Service
@@ -96,13 +100,8 @@ pub struct Shutdown {
     pub grace_ms: u64,
 }
 
-/// Prepare for listener handoff: Boot → Peripheral
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PrepareHandoff;
-
-/// Listener handoff ready: Peripheral → Boot (fd attached via SCM_RIGHTS)
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct HandoffReady;
+// PrepareHandoff and HandoffReady removed — hot swap no longer uses fd passing.
+// Boot kills old peripheral directly and spawns new one on a random port.
 
 // ---------------------------------------------------------------------------
 // Update loop message types (Phase 2)
@@ -340,6 +339,9 @@ pub struct AdminStatusResponse {
     pub connected_peers: Vec<String>,
     pub version_locked: bool,
     pub probation_active: bool,
+    /// HTTP port of the currently running peripheral (if connected).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub peripheral_http_port: Option<u16>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -518,8 +520,6 @@ pub mod msg_types {
     pub const LEASE_ACK: &str = "LeaseAck";
     pub const RUNLEVEL_CHANGE: &str = "RunlevelChange";
     pub const SHUTDOWN: &str = "Shutdown";
-    pub const PREPARE_HANDOFF: &str = "PrepareHandoff";
-    pub const HANDOFF_READY: &str = "HandoffReady";
 
     pub const SUBMIT_UPDATE: &str = "SubmitUpdate";
     pub const COMPILE_REQUEST: &str = "CompileRequest";
@@ -583,8 +583,6 @@ pub fn is_core_message(msg_type: &str) -> bool {
             | msg_types::LEASE_ACK
             | msg_types::RUNLEVEL_CHANGE
             | msg_types::SHUTDOWN
-            | msg_types::PREPARE_HANDOFF
-            | msg_types::HANDOFF_READY
             | msg_types::SUBMIT_UPDATE
             | msg_types::COMPILE_REQUEST
             | msg_types::COMPILE_RESULT

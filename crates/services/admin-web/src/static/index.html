@@ -139,22 +139,31 @@ async function initAgent() {
   try {
     const r = await fetch('/api/agent-url');
     const d = await r.json();
-    agentUrl = d.url;
-    document.getElementById('agent-frame').src = agentUrl;
+    if (d.url) {
+      agentUrl = d.url;
+      document.getElementById('agent-frame').src = agentUrl;
+    }
   } catch(e) { console.warn('Failed to load agent URL:', e); }
 }
 
-function reloadAgent() {
-  if (!agentUrl) return;
+async function reloadAgent() {
+  // Re-fetch the agent URL since the port may have changed after hot-swap.
   const banner = document.getElementById('agent-banner');
   const bannerVer = document.getElementById('banner-version');
   bannerVer.textContent = lastVersion;
   banner.style.display = 'block';
-  // Brief delay to let new peripheral start, then reload
-  setTimeout(() => {
-    document.getElementById('agent-frame').src = agentUrl + '?v=' + Date.now();
+  // Wait for new peripheral to start and register with Boot.
+  setTimeout(async () => {
+    try {
+      const r = await fetch('/api/agent-url');
+      const d = await r.json();
+      if (d.url) {
+        agentUrl = d.url;
+        document.getElementById('agent-frame').src = agentUrl + '?v=' + Date.now();
+      }
+    } catch(e) { console.warn('Failed to reload agent URL:', e); }
     setTimeout(() => { banner.style.display = 'none'; }, 2000);
-  }, 1500);
+  }, 2000);
 }
 
 // ---------------------------------------------------------------------------

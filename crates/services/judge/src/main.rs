@@ -97,6 +97,7 @@ async fn run_service(config: &Config) -> Result<(), Box<dyn std::error::Error + 
     let hello = Hello {
         protocol_version: "1.0".to_string(),
         capabilities: serde_json::json!(["test", "score"]),
+        http_port: None,
     };
 
     let hello_envelope = Envelope {

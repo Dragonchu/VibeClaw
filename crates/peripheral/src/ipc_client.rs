@@ -1,4 +1,3 @@
-use std::os::unix::io::OwnedFd;
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -25,17 +24,18 @@ pub struct IpcHandle {
     pub tx: mpsc::Sender<Envelope>,
     pub rx: mpsc::Receiver<Envelope>,
     pub runlevel: u8,
-    pub inherited_listener: Option<OwnedFd>,
 }
 
 pub async fn connect_and_handshake(
     sock_path: &Path,
+    http_port: Option<u16>,
 ) -> Result<IpcHandle, Box<dyn std::error::Error + Send + Sync>> {
     let stream = UnixStream::connect(sock_path).await?;
 
     let hello = Hello {
         protocol_version: "1.0".to_string(),
         capabilities: serde_json::json!(["agent"]),
+        http_port,
     };
 
     let hello_envelope = Envelope {
@@ -56,18 +56,13 @@ pub async fn connect_and_handshake(
     }
 
     let welcome: Welcome = serde_json::from_value(welcome_envelope.payload)?;
-    let inherited_listener = welcome_envelope
-        .fds
-        .first()
-        .cloned()
-        .and_then(|fd| Arc::try_unwrap(fd).ok());
     tracing::info!(runlevel = welcome.runlevel, "Handshake complete");
 
     let (outgoing_tx, mut outgoing_rx) = mpsc::channel::<Envelope>(64);
     let (incoming_tx, incoming_rx) = mpsc::channel::<Envelope>(64);
 
     // Wrap in Arc so both reader and writer tasks can share the full stream
-    // (needed for SCM_RIGHTS FD passing; split halves lose that capability).
+    // (needed for SCM_RIGHTS FD passing on write path; split halves lose that capability).
     let stream = Arc::new(stream);
 
     let write_stream = Arc::clone(&stream);
@@ -101,7 +96,6 @@ pub async fn connect_and_handshake(
         tx: outgoing_tx,
         rx: incoming_rx,
         runlevel: welcome.runlevel,
-        inherited_listener,
     })
 }
 

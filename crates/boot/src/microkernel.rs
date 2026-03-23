@@ -8,7 +8,6 @@
 //! - Track runlevel state
 
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crate::capability::CapabilityManager;
@@ -20,10 +19,8 @@ use crate::resource::{ResourceLimits, ResourceMonitor, ViolationSeverity};
 use crate::runlevel::{Runlevel, RunlevelManager, TransitionReason};
 use crate::state::{MigrationTransaction, StateStore};
 use crate::version::VersionManager;
-use libc;
 use reloopy_ipc::messages::{self, Envelope, LeaseAck, TestVerdict, Welcome, msg_types};
 use reloopy_ipc::{LogErr, to_json_value};
-use std::os::unix::io::{AsRawFd, OwnedFd};
 
 #[derive(Debug, Clone)]
 pub struct BootConfig {
@@ -120,26 +117,12 @@ const HOT_SWAP_HANDSHAKE_TIMEOUT_SECS: u64 = 60;
 
 enum HotSwapState {
     Idle,
-    WaitingForHandoffReady {
-        new_version: String,
-        new_binary: PathBuf,
-        old_version: String,
-        initiated_at: Instant,
-    },
-    WaitingForOldDisconnect {
-        new_version: String,
-        new_binary: PathBuf,
-        old_version: String,
-        initiated_at: Instant,
-        listener_fd: Arc<OwnedFd>,
-    },
     WaitingForNewHandshake {
         new_version: String,
         old_version: String,
         initiated_at: Instant,
         #[allow(dead_code)]
         child: Option<tokio::process::Child>,
-        listener_fd: Option<Arc<OwnedFd>>,
     },
 }
 
@@ -157,6 +140,8 @@ pub struct Microkernel {
     hot_swap: HotSwapState,
     shutdown_requested: bool,
     peripheral_child: Option<tokio::process::Child>,
+    /// HTTP port reported by the currently connected peripheral.
+    peripheral_http_port: Option<u16>,
     /// Peers that have subscribed to event broadcasts (identity → subscribed categories).
     /// Empty category list means all events.
     event_subscribers: std::collections::HashMap<String, Vec<String>>,
@@ -192,6 +177,7 @@ impl Microkernel {
             hot_swap: HotSwapState::Idle,
             shutdown_requested: false,
             peripheral_child: None,
+            peripheral_http_port: None,
             event_subscribers: std::collections::HashMap::new(),
         }
     }
@@ -296,9 +282,6 @@ impl Microkernel {
             msg_types::HELLO => {
                 self.handle_hello(envelope, router).await;
             }
-            msg_types::HANDOFF_READY => {
-                self.handle_handoff_ready(envelope, router).await;
-            }
             msg_types::LEASE_RENEW => {
                 self.handle_lease_renew(envelope, router).await;
             }
@@ -398,7 +381,14 @@ impl Microkernel {
 
         self.lease_manager.register(from.clone());
 
-        let mut listener_fd_to_send: Option<Arc<OwnedFd>> = None;
+        // Track peripheral's HTTP port for AdminWeb iframe embedding.
+        if from == "peripheral" {
+            self.peripheral_http_port = hello.http_port;
+            if let Some(port) = hello.http_port {
+                tracing::info!(peer = %from, http_port = port, "Peripheral HTTP port registered");
+            }
+        }
+
         let mut pending_hot_swap: Option<(String, Option<tokio::process::Child>)> = None;
 
         if from == "peripheral" {
@@ -407,10 +397,8 @@ impl Microkernel {
                 old_version: _,
                 initiated_at: _,
                 child,
-                listener_fd,
             } = &mut self.hot_swap
             {
-                listener_fd_to_send = listener_fd.take();
                 pending_hot_swap = Some((new_version.clone(), child.take()));
             }
         }
@@ -426,10 +414,7 @@ impl Microkernel {
             msg_type: msg_types::WELCOME.to_string(),
             id: envelope.id.clone(),
             payload: to_json_value(&welcome),
-            fds: listener_fd_to_send
-                .as_ref()
-                .map(|fd| vec![fd.clone()])
-                .unwrap_or_default(),
+            fds: Vec::new(),
         };
 
         if let Err(e) = router.send_to(from, response).await {
@@ -466,76 +451,6 @@ impl Microkernel {
                 )
                 .await;
                 self.hot_swap = HotSwapState::Idle;
-            }
-        }
-    }
-
-    async fn handle_handoff_ready(&mut self, envelope: Envelope, router: &RouterHandle) {
-        let from = envelope.from.clone();
-
-        let state = std::mem::replace(&mut self.hot_swap, HotSwapState::Idle);
-        let (new_version, new_binary, old_version) = match state {
-            HotSwapState::WaitingForHandoffReady {
-                new_version,
-                new_binary,
-                old_version,
-                ..
-            } => (new_version, new_binary, old_version),
-            other => {
-                self.hot_swap = other;
-                tracing::warn!(
-                    peer = %from,
-                    "HandoffReady received but not awaiting handoff"
-                );
-                return;
-            }
-        };
-
-        let fd = match envelope.fds.first().cloned() {
-            Some(fd) => fd,
-            None => {
-                tracing::warn!("HandoffReady without fd — aborting hot swap");
-                self.hot_swap = HotSwapState::Idle;
-                return;
-            }
-        };
-
-        let raw = fd.as_raw_fd();
-        unsafe {
-            let flags = libc::fcntl(raw, libc::F_GETFD);
-            if flags >= 0 {
-                let _ = libc::fcntl(raw, libc::F_SETFD, flags & !libc::FD_CLOEXEC);
-            }
-        }
-
-        tracing::info!(
-            version = %new_version,
-            "Listener fd received — spawning new peripheral"
-        );
-
-        match self.spawn_peripheral(&new_binary, &new_version).await {
-            Ok(child) => {
-                self.hot_swap = HotSwapState::WaitingForNewHandshake {
-                    new_version,
-                    old_version,
-                    initiated_at: Instant::now(),
-                    child: Some(child),
-                    listener_fd: Some(fd),
-                };
-            }
-            Err(e) => {
-                tracing::error!("Failed to spawn new peripheral: {}", e);
-                self.hot_swap = HotSwapState::Idle;
-                if let Err(re) = self.version_manager.rollback() {
-                    tracing::error!("Rollback also failed: {}", re);
-                }
-                self.send_audit(
-                    router,
-                    "hot_swap_failed",
-                    None,
-                    serde_json::json!({ "error": e.to_string() }),
-                )
-                .await;
             }
         }
     }
@@ -1183,26 +1098,38 @@ impl Microkernel {
         if new_binary.exists() {
             tracing::info!(
                 version = %new_version,
-                "Initiating hot swap — sending PrepareHandoff to old peripheral"
+                "Initiating hot swap — killing old peripheral, spawning new"
             );
 
-            let prepare = messages::PrepareHandoff;
-            let prepare_envelope = Envelope {
-                from: "boot".to_string(),
-                to: "peripheral".to_string(),
-                msg_type: msg_types::PREPARE_HANDOFF.to_string(),
-                id: String::new(),
-                payload: to_json_value(&prepare),
-                fds: Vec::new(),
-            };
-            router.send_to("peripheral", prepare_envelope).await.warn_err();
+            // Kill old peripheral first so its port is released.
+            self.kill_peripheral_process().await;
+            router.force_remove_peer("peripheral").await;
+            self.lease_manager.remove("peripheral");
+            self.peripheral_http_port = None;
 
-            self.hot_swap = HotSwapState::WaitingForHandoffReady {
-                new_version: new_version.to_string(),
-                new_binary,
-                old_version,
-                initiated_at: Instant::now(),
-            };
+            match self.spawn_peripheral(&new_binary, new_version).await {
+                Ok(child) => {
+                    self.hot_swap = HotSwapState::WaitingForNewHandshake {
+                        new_version: new_version.to_string(),
+                        old_version,
+                        initiated_at: Instant::now(),
+                        child: Some(child),
+                    };
+                }
+                Err(e) => {
+                    tracing::error!("Failed to spawn new peripheral: {}", e);
+                    if let Err(re) = self.version_manager.rollback() {
+                        tracing::error!("Rollback also failed: {}", re);
+                    }
+                    self.send_audit(
+                        router,
+                        "hot_swap_failed",
+                        Some(new_version),
+                        serde_json::json!({ "error": e.to_string() }),
+                    )
+                    .await;
+                }
+            }
         } else {
             tracing::warn!(
                 version = %new_version,
@@ -1396,22 +1323,17 @@ impl Microkernel {
                     );
                 }
                 LeaseStatus::Dead => {
-                    let during_hot_swap = identity == "peripheral"
-                        && (matches!(self.hot_swap, HotSwapState::WaitingForOldDisconnect { .. })
-                            || matches!(
-                                self.hot_swap,
-                                HotSwapState::WaitingForHandoffReady { .. }
-                            ));
-
-                    tracing::error!(peer = %identity, during_hot_swap, "Peer declared dead (lease expired)");
+                    tracing::error!(peer = %identity, "Peer declared dead (lease expired)");
                     router.force_remove_peer(&identity).await;
                     self.lease_manager.remove(&identity);
                     self.resource_monitor.remove_peer(&identity);
                     self.event_subscribers.remove(&identity);
 
-                    if during_hot_swap {
-                        self.advance_hot_swap_after_disconnect(router).await;
-                    } else if let Some(suggested) = self.runlevel_manager.record_crash() {
+                    if identity == "peripheral" {
+                        self.peripheral_http_port = None;
+                    }
+
+                    if let Some(suggested) = self.runlevel_manager.record_crash() {
                         self.attempt_runlevel_transition(
                             suggested,
                             &format!(
@@ -1425,56 +1347,6 @@ impl Microkernel {
                     }
                 }
                 _ => {}
-            }
-        }
-    }
-
-    async fn advance_hot_swap_after_disconnect(&mut self, router: &RouterHandle) {
-        let (new_version, new_binary, old_version) =
-            match std::mem::replace(&mut self.hot_swap, HotSwapState::Idle) {
-                HotSwapState::WaitingForOldDisconnect {
-                    new_version,
-                    new_binary,
-                    old_version,
-                    ..
-                } => (new_version, new_binary, old_version),
-                other => {
-                    self.hot_swap = other;
-                    return;
-                }
-            };
-
-        tracing::info!(
-            new_version = %new_version,
-            binary = %new_binary.display(),
-            "Old peripheral disconnected — spawning new version"
-        );
-
-        self.kill_peripheral_process().await;
-
-        match self.spawn_peripheral(&new_binary, &new_version).await {
-            Ok(child) => {
-                self.hot_swap = HotSwapState::WaitingForNewHandshake {
-                    new_version,
-                    old_version,
-                    initiated_at: Instant::now(),
-                    child: Some(child),
-                    listener_fd: None,
-                };
-            }
-            Err(e) => {
-                tracing::error!("Failed to spawn new peripheral: {}", e);
-                tracing::warn!("Rolling back to previous version");
-                if let Err(re) = self.version_manager.rollback() {
-                    tracing::error!("Rollback also failed: {}", re);
-                }
-                self.send_audit(
-                    router,
-                    "hot_swap_failed",
-                    Some(&new_version),
-                    serde_json::json!({ "error": e.to_string() }),
-                )
-                .await;
             }
         }
     }
@@ -1522,28 +1394,10 @@ impl Microkernel {
     async fn check_hot_swap(&mut self, router: &RouterHandle) {
         match &self.hot_swap {
             HotSwapState::Idle => {}
-            HotSwapState::WaitingForHandoffReady { initiated_at, .. } => {
-                if initiated_at.elapsed() > Duration::from_secs(15) {
-                    tracing::warn!("HandoffReady not received within timeout — aborting");
-                    self.hot_swap = HotSwapState::Idle;
-                }
-            }
-            HotSwapState::WaitingForOldDisconnect { initiated_at, .. } => {
-                if initiated_at.elapsed() > Duration::from_secs(15) {
-                    tracing::warn!(
-                        "Old peripheral did not disconnect within timeout — forcing advance"
-                    );
-                    self.kill_peripheral_process().await;
-                    router.force_remove_peer("peripheral").await;
-                    self.lease_manager.remove("peripheral");
-                    self.advance_hot_swap_after_disconnect(router).await;
-                }
-            }
             HotSwapState::WaitingForNewHandshake {
                 new_version,
                 old_version,
                 initiated_at,
-                listener_fd: _,
                 ..
             } => {
                 if initiated_at.elapsed() > Duration::from_secs(HOT_SWAP_HANDSHAKE_TIMEOUT_SECS) {
@@ -1556,12 +1410,8 @@ impl Microkernel {
 
                     // Extract and kill the child from WaitingForNewHandshake state
                     let old_state = std::mem::replace(&mut self.hot_swap, HotSwapState::Idle);
-                    if let HotSwapState::WaitingForNewHandshake {
-                        child, listener_fd, ..
-                    } = old_state
-                    {
+                    if let HotSwapState::WaitingForNewHandshake { child, .. } = old_state {
                         self.peripheral_child = child;
-                        drop(listener_fd);
                     }
                     self.kill_peripheral_process().await;
 
@@ -1975,6 +1825,7 @@ impl Microkernel {
             connected_peers: connected,
             version_locked: self.version_manager.is_locked(),
             probation_active: self.probation.is_some(),
+            peripheral_http_port: self.peripheral_http_port,
         };
 
         let response = Envelope {

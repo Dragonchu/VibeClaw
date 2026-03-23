@@ -42,7 +42,29 @@ async fn index() -> impl IntoResponse {
 }
 
 async fn api_agent_url(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    axum::Json(serde_json::json!({ "url": state.peripheral_url }))
+    // Ask Boot for the peripheral's current HTTP port.
+    let payload = match serialize_payload(&messages::AdminStatusRequest {}) {
+        Ok(p) => p,
+        Err(r) => return r,
+    };
+    let mut ipc = state.ipc.lock().await;
+    match ipc.request(msg_types::ADMIN_STATUS_REQUEST, payload).await {
+        Ok(resp) => {
+            let port = resp.payload.get("peripheral_http_port")
+                .and_then(|v| v.as_u64())
+                .map(|p| p as u16);
+            match port {
+                Some(p) => axum::Json(serde_json::json!({
+                    "url": format!("http://localhost:{}", p)
+                })).into_response(),
+                None => axum::Json(serde_json::json!({
+                    "url": null,
+                    "error": "Peripheral not connected"
+                })).into_response(),
+            }
+        }
+        Err(e) => (StatusCode::SERVICE_UNAVAILABLE, format!("IPC error: {}", e)).into_response(),
+    }
 }
 
 // ---------------------------------------------------------------------------
