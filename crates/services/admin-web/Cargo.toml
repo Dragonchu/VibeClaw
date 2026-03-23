@@ -14,5 +14,4 @@ serde_json = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 axum = { workspace = true }
-tokio-stream = { workspace = true }
 reloopy-ipc = { workspace = true }

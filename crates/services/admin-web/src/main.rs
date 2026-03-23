@@ -2,14 +2,13 @@
 //!
 //! An independent HTTP server that provides a web dashboard for observing and
 //! managing the Reloopy system. It connects to Boot's Unix Domain Socket using
-//! the same IPC protocol as the admin CLI tool, then serves a REST + SSE API
-//! that a browser (or any HTTP client) can consume.
+//! the same IPC protocol as the admin CLI tool, then serves a REST API that a
+//! browser (or any HTTP client) can consume. The frontend polls for updates.
 //!
 //! Design rationale (see plan.md §AdminWeb):
 //! - Boot's TCB stays minimal — no HTTP code lands in the microkernel.
 //! - AdminWeb is just another IPC peer with "admin" capability.
 //! - All management is delegated to existing Admin* message types.
-//! - Real-time events are forwarded over SSE using EventSubscribe.
 
 mod ipc;
 mod web;
@@ -51,7 +50,6 @@ impl Default for Config {
 pub struct AppState {
     pub ipc: Mutex<AdminWebIpc>,
     pub peripheral_url: String,
-    pub sock_path: PathBuf,
 }
 
 #[tokio::main]
@@ -86,7 +84,6 @@ async fn main() {
     let state = Arc::new(AppState {
         ipc: Mutex::new(ipc),
         peripheral_url: config.peripheral_url.clone(),
-        sock_path: config.sock_path.clone(),
     });
 
     // Keep Boot lease alive — admin-web must heartbeat just like any other peer.
