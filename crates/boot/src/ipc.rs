@@ -15,6 +15,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::{mpsc, oneshot};
@@ -22,6 +23,12 @@ use tokio::sync::{mpsc, oneshot};
 use reloopy_ipc::messages::Envelope;
 use reloopy_ipc::wire;
 use reloopy_ipc::LogErr;
+
+/// Monotonically increasing counter used to assign a unique ID to every
+/// accepted connection. This lets `RemovePeer` distinguish between "remove
+/// the current live connection" and "remove a stale connection that has
+/// since been superseded by a reconnect with the same identity".
+static CONN_ID_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 // ---------------------------------------------------------------------------
 // Peer handle (internal to the actor)
@@ -42,6 +49,10 @@ const PEER_OUTBOUND_CHANNEL_SIZE: usize = 64;
 struct PeerHandle {
     /// Peer identity (e.g. "peripheral", "compiler", "judge", "audit")
     identity: String,
+    /// Unique ID of the connection that registered this peer.
+    /// Used to guard against stale `RemovePeer` commands from old connections
+    /// that raced with a newer reconnect of the same identity.
+    conn_id: u64,
     /// Channel to send messages to this peer
     tx: mpsc::Sender<Envelope>,
 }
@@ -54,9 +65,19 @@ struct PeerHandle {
 enum RouterCommand {
     RegisterPeer {
         identity: String,
+        conn_id: u64,
         tx: mpsc::Sender<Envelope>,
     },
     RemovePeer {
+        identity: String,
+        /// Only remove the entry if its stored `conn_id` matches this value.
+        /// This prevents a stale cleanup from evicting a peer that has already
+        /// reconnected under the same identity.
+        conn_id: u64,
+    },
+    /// Unconditional removal issued by the kernel (lease expiry, capability
+    /// failure, hot-swap force). Not guarded by conn_id.
+    ForceRemovePeer {
         identity: String,
     },
     SendTo {
@@ -131,9 +152,27 @@ impl RouterHandle {
     }
 
     /// Remove a peer from the routing table.
-    pub async fn remove_peer(&self, identity: &str) {
+    ///
+    /// The `conn_id` must match the ID assigned when the peer was registered;
+    /// if a newer connection has already superseded this one, the remove is a
+    /// no-op so the live peer stays in the table.
+    async fn remove_peer(&self, identity: &str, conn_id: u64) {
         self.cmd_tx
             .send(RouterCommand::RemovePeer {
+                identity: identity.to_string(),
+                conn_id,
+            })
+            .await
+            .warn_err();
+    }
+
+    /// Unconditionally remove a peer from the routing table regardless of
+    /// connection ID. Use this for kernel-initiated evictions (capability
+    /// failure, lease expiry, forced hot-swap advance) where there is no
+    /// associated connection to guard against.
+    pub async fn force_remove_peer(&self, identity: &str) {
+        self.cmd_tx
+            .send(RouterCommand::ForceRemovePeer {
                 identity: identity.to_string(),
             })
             .await
@@ -141,9 +180,9 @@ impl RouterHandle {
     }
 
     /// Register a new peer with the router actor.
-    async fn register_peer(&self, identity: String, tx: mpsc::Sender<Envelope>) {
+    async fn register_peer(&self, identity: String, conn_id: u64, tx: mpsc::Sender<Envelope>) {
         self.cmd_tx
-            .send(RouterCommand::RegisterPeer { identity, tx })
+            .send(RouterCommand::RegisterPeer { identity, conn_id, tx })
             .await
             .warn_err();
     }
@@ -238,19 +277,32 @@ impl RouterActor {
 
     async fn handle_command(&mut self, cmd: RouterCommand) {
         match cmd {
-            RouterCommand::RegisterPeer { identity, tx } => {
+            RouterCommand::RegisterPeer { identity, conn_id, tx } => {
                 self.peers.insert(
                     identity.clone(),
                     PeerHandle {
                         identity: identity.clone(),
+                        conn_id,
                         tx,
                     },
                 );
-                tracing::debug!(peer = %identity, "Peer registered in routing table");
+                tracing::debug!(peer = %identity, conn_id, "Peer registered in routing table");
             }
-            RouterCommand::RemovePeer { identity } => {
-                if self.peers.remove(&identity).is_some() {
-                    tracing::info!(peer = %identity, "Peer disconnected");
+            RouterCommand::RemovePeer { identity, conn_id } => {
+                // Only remove if the stored connection ID matches.  A newer
+                // reconnect will have incremented the counter, so a stale
+                // cleanup from an old connection is safely ignored.
+                let current_conn_id = self.peers.get(&identity).map(|p| p.conn_id);
+                if current_conn_id == Some(conn_id) {
+                    self.peers.remove(&identity);
+                    tracing::info!(peer = %identity, conn_id, "Peer disconnected");
+                } else {
+                    tracing::debug!(
+                        peer = %identity,
+                        conn_id,
+                        current_conn_id = ?current_conn_id,
+                        "Ignoring stale RemovePeer (peer already reconnected)"
+                    );
                 }
             }
             RouterCommand::SendTo {
@@ -267,6 +319,11 @@ impl RouterActor {
                     Err(format!("Peer '{}' not connected", identity))
                 };
                 reply.send(result).ok();
+            }
+            RouterCommand::ForceRemovePeer { identity } => {
+                if self.peers.remove(&identity).is_some() {
+                    tracing::info!(peer = %identity, "Peer forcibly evicted by kernel");
+                }
             }
             RouterCommand::Broadcast { msg } => {
                 for (identity, peer) in &self.peers {
@@ -293,6 +350,11 @@ async fn handle_connection(
     boot_tx: mpsc::Sender<Envelope>,
     handle: RouterHandle,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    // Assign a unique ID to this connection so that RemovePeer commands from
+    // this connection cannot accidentally evict a peer that has already
+    // reconnected under the same identity.
+    let conn_id = CONN_ID_COUNTER.fetch_add(1, Ordering::Relaxed);
+
     // Wrap the stream in an Arc so both reader and writer tasks can share it.
     // tokio::net::UnixStream supports concurrent read/write from different
     // tasks, and using the full (unsplit) stream preserves SCM_RIGHTS support.
@@ -302,13 +364,13 @@ async fn handle_connection(
     let first_envelope = wire::read_envelope_with_fds(&stream).await?;
     let identity = first_envelope.from.clone();
 
-    tracing::info!(peer = %identity, "New peer connected");
+    tracing::info!(peer = %identity, conn_id, "New peer connected");
 
     // Create a channel for outgoing messages to this peer
     let (tx, mut rx) = mpsc::channel::<Envelope>(PEER_OUTBOUND_CHANNEL_SIZE);
 
     // Register the peer via the router actor
-    handle.register_peer(identity.clone(), tx).await;
+    handle.register_peer(identity.clone(), conn_id, tx).await;
 
     // Forward the first message (likely Hello) to boot
     if let Err(e) = boot_tx.send(first_envelope).await {
@@ -363,9 +425,9 @@ async fn handle_connection(
             }
         }
 
-        // Cleanup
-        handle.remove_peer(&identity).await;
-        tracing::info!(peer = %identity, "Peer reader finished");
+        // Cleanup: only removes this connection; a newer reconnect is unaffected.
+        handle.remove_peer(&identity, conn_id).await;
+        tracing::info!(peer = %identity, conn_id, "Peer reader finished");
     });
 
     // Wait for either task to finish, then abort the other
@@ -374,8 +436,8 @@ async fn handle_connection(
         _ = reader_handle => {},
     }
 
-    // Ensure cleanup (idempotent — RemovePeer on an absent identity is a no-op)
-    handle.remove_peer(&identity).await;
+    // Ensure cleanup (guarded by conn_id — safe to call even if reader already did it)
+    handle.remove_peer(&identity, conn_id).await;
 
     Ok(())
 }
@@ -465,7 +527,7 @@ mod tests {
 
         // Register a peer
         let (peer_tx, mut peer_rx) = mpsc::channel(16);
-        handle.register_peer("compiler".into(), peer_tx).await;
+        handle.register_peer("compiler".into(), 1, peer_tx).await;
 
         // Send a message to the peer
         let env = Envelope {
@@ -525,10 +587,10 @@ mod tests {
         });
 
         let (peer_tx, _peer_rx) = mpsc::channel(16);
-        handle.register_peer("compiler".into(), peer_tx).await;
+        handle.register_peer("compiler".into(), 1, peer_tx).await;
 
         // Remove the peer
-        handle.remove_peer("compiler").await;
+        handle.remove_peer("compiler", 1).await;
 
         // Send should now fail
         let env = Envelope {
@@ -559,8 +621,8 @@ mod tests {
 
         let (tx1, mut rx1) = mpsc::channel(16);
         let (tx2, mut rx2) = mpsc::channel(16);
-        handle.register_peer("a".into(), tx1).await;
-        handle.register_peer("b".into(), tx2).await;
+        handle.register_peer("a".into(), 1, tx1).await;
+        handle.register_peer("b".into(), 2, tx2).await;
 
         let env = Envelope {
             from: "boot".into(),
@@ -595,8 +657,8 @@ mod tests {
 
         let (tx1, _rx1) = mpsc::channel(16);
         let (tx2, _rx2) = mpsc::channel(16);
-        handle.register_peer("compiler".into(), tx1).await;
-        handle.register_peer("judge".into(), tx2).await;
+        handle.register_peer("compiler".into(), 1, tx1).await;
+        handle.register_peer("judge".into(), 2, tx2).await;
 
         let mut peers = handle.connected_peers().await;
         peers.sort();
@@ -618,9 +680,9 @@ mod tests {
         });
 
         // Remove a peer that was never registered — should not panic
-        handle.remove_peer("nonexistent").await;
+        handle.remove_peer("nonexistent", 999).await;
         // Remove again
-        handle.remove_peer("nonexistent").await;
+        handle.remove_peer("nonexistent", 999).await;
 
         let peers = handle.connected_peers().await;
         assert!(peers.is_empty());
@@ -641,7 +703,7 @@ mod tests {
         });
 
         let (peer_tx, mut peer_rx) = mpsc::channel(16);
-        handle.register_peer("peripheral".into(), peer_tx).await;
+        handle.register_peer("peripheral".into(), 1, peer_tx).await;
 
         let env = Envelope {
             from: "boot".into(),
@@ -657,6 +719,48 @@ mod tests {
         let received = peer_rx.recv().await.unwrap();
         assert_eq!(received.to, "peripheral");
         assert_eq!(received.id, "42");
+
+        actor_task.abort();
+    }
+
+    #[tokio::test]
+    async fn stale_remove_peer_does_not_evict_reconnected_peer() {
+        // Simulate: peer connects (conn_id=1), then reconnects (conn_id=2),
+        // then the old connection's cleanup fires RemovePeer with conn_id=1.
+        // The new connection (conn_id=2) must remain in the routing table.
+        let (mut actor, handle) = make_actor();
+
+        let actor_task = tokio::spawn(async move {
+            for _ in 0..4 {
+                if let Some(cmd) = actor.cmd_rx.recv().await {
+                    actor.handle_command(cmd).await;
+                }
+            }
+        });
+
+        let (tx1, _rx1) = mpsc::channel(16);
+        let (tx2, mut rx2) = mpsc::channel(16);
+
+        // Old connection registers
+        handle.register_peer("peripheral".into(), 1, tx1).await;
+        // New connection registers (same identity, higher conn_id)
+        handle.register_peer("peripheral".into(), 2, tx2).await;
+        // Old connection's stale cleanup fires — must be ignored
+        handle.remove_peer("peripheral", 1).await;
+
+        // Peer with conn_id=2 must still be reachable
+        let env = Envelope {
+            from: "boot".into(),
+            to: "peripheral".into(),
+            msg_type: "ping".into(),
+            id: "x".into(),
+            payload: serde_json::Value::Null,
+            fds: Vec::new(),
+        };
+        let result = handle.send_to("peripheral", env).await;
+        assert!(result.is_ok(), "new connection should still be reachable");
+        let received = rx2.recv().await.unwrap();
+        assert_eq!(received.msg_type, "ping");
 
         actor_task.abort();
     }

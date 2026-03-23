@@ -392,7 +392,7 @@ impl Microkernel {
 
         if let Err(reason) = CapabilityRegistry::validate(from, &hello.capabilities) {
             tracing::warn!(peer = %from, "Capability validation failed: {}", reason);
-            router.remove_peer(from).await;
+            router.force_remove_peer(from).await;
             return;
         }
 
@@ -1393,7 +1393,7 @@ impl Microkernel {
                             ));
 
                     tracing::error!(peer = %identity, during_hot_swap, "Peer declared dead (lease expired)");
-                    router.remove_peer(&identity).await;
+                    router.force_remove_peer(&identity).await;
                     self.lease_manager.remove(&identity);
                     self.resource_monitor.remove_peer(&identity);
                     self.event_subscribers.remove(&identity);
@@ -1523,7 +1523,7 @@ impl Microkernel {
                         "Old peripheral did not disconnect within timeout — forcing advance"
                     );
                     self.kill_peripheral_process().await;
-                    router.remove_peer("peripheral").await;
+                    router.force_remove_peer("peripheral").await;
                     self.lease_manager.remove("peripheral");
                     self.advance_hot_swap_after_disconnect(router).await;
                 }

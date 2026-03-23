@@ -116,8 +116,15 @@ impl AdminWebIpc {
         };
         wire::write_envelope(&mut self.writer, &envelope).await?;
 
-        // Wait for EventSubscribeAck
-        let ack = wire::read_envelope(&mut self.reader).await?;
+        // Wait for EventSubscribeAck (with timeout — Boot may fail to deliver
+        // the Ack if a reconnect race caused it to send to a stale routing entry)
+        let ack = tokio::time::timeout(
+            tokio::time::Duration::from_secs(5),
+            wire::read_envelope(&mut self.reader),
+        )
+        .await
+        .map_err(|_| "Timed out waiting for EventSubscribeAck")?
+        .map_err(|e| format!("Failed to read EventSubscribeAck: {}", e))?;
         if ack.msg_type != msg_types::EVENT_SUBSCRIBE_ACK {
             return Err(format!("Expected EventSubscribeAck, got {}", ack.msg_type).into());
         }
