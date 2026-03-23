@@ -7,6 +7,10 @@ use serde::{Deserialize, Serialize};
 use std::os::unix::io::OwnedFd;
 use std::sync::Arc;
 
+fn default_attempt() -> u32 {
+    1
+}
+
 // ---------------------------------------------------------------------------
 // Message envelope — every IPC message is wrapped in this
 // ---------------------------------------------------------------------------
@@ -116,6 +120,9 @@ pub struct CompileRequest {
     pub version: String,
     pub source_path: String,
     pub output_path: String,
+    /// Which attempt this is for the given version (1-based).
+    #[serde(default = "default_attempt")]
+    pub attempt: u32,
 }
 
 /// Compiler → Boot: compilation result
@@ -141,6 +148,9 @@ pub struct UpdateRejected {
     pub suggestion: Option<String>,
     #[serde(default)]
     pub allows_patch_retry: bool,
+    /// Which attempt just failed (1-based).
+    #[serde(default)]
+    pub attempt: u32,
 }
 
 /// Boot → Peripheral: update accepted
@@ -471,6 +481,9 @@ pub struct CompileProgress {
     pub log_line: Option<String>,
     /// Whether this is the final progress event for this version
     pub finished: bool,
+    /// Which attempt this progress belongs to (1-based).
+    #[serde(default = "default_attempt")]
+    pub attempt: u32,
 }
 
 /// Boot → subscribers: incremental test-run progress update.

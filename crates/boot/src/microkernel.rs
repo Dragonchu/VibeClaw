@@ -671,7 +671,7 @@ impl Microkernel {
             return;
         }
 
-        let version_info = match self.version_manager.allocate_version() {
+        let (version_info, attempt) = match self.version_manager.reuse_pending_or_allocate() {
             Ok(v) => v,
             Err(e) => {
                 tracing::error!("Failed to allocate version: {}", e);
@@ -726,6 +726,7 @@ impl Microkernel {
                 .join("target")
                 .to_string_lossy()
                 .to_string(),
+            attempt,
         };
 
         tracing::info!(
@@ -775,10 +776,13 @@ impl Microkernel {
         if !result.success {
             tracing::warn!(version = %result.version, "Compilation failed");
             self.version_manager.cleanup_worktree(&result.version);
+            self.version_manager.mark_pending(&result.version);
             let locked = self.version_manager.record_failure();
             if locked {
                 tracing::error!("Version manager locked after consecutive failures");
             }
+
+            let attempt = self.version_manager.pending_attempt();
 
             // Broadcast failure progress to subscribers
             let progress = messages::CompileProgress {
@@ -787,6 +791,7 @@ impl Microkernel {
                 percent: 0,
                 log_line: result.errors.clone().map(|e| e.lines().last().unwrap_or_default().to_string()),
                 finished: true,
+                attempt,
             };
             self.broadcast_to_subscribers("compile", msg_types::COMPILE_PROGRESS, to_json_value(&progress), router).await;
 
@@ -794,6 +799,8 @@ impl Microkernel {
                 version: result.version,
                 reason: "Compilation failed".to_string(),
                 errors: result.errors,
+                allows_patch_retry: !locked,
+                attempt,
                 ..Default::default()
             };
             let response = Envelope {
@@ -810,6 +817,8 @@ impl Microkernel {
 
         tracing::info!(version = %result.version, "Compilation succeeded — sending to judge for testing");
 
+        self.version_manager.clear_pending();
+
         // Broadcast success progress to subscribers
         let progress = messages::CompileProgress {
             version: result.version.clone(),
@@ -817,6 +826,7 @@ impl Microkernel {
             percent: 100,
             log_line: None,
             finished: true,
+            attempt: 1,
         };
         self.broadcast_to_subscribers("compile", msg_types::COMPILE_PROGRESS, to_json_value(&progress), router).await;
 
@@ -996,6 +1006,7 @@ impl Microkernel {
                     scores: scores_value,
                     suggestion: result.suggestion,
                     allows_patch_retry: true,
+                    ..Default::default()
                 };
                 let response = Envelope {
                     from: "boot".to_string(),

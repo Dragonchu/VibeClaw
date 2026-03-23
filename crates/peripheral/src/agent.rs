@@ -263,13 +263,29 @@ fn format_update_result(envelope: &Envelope) -> String {
                 .get("suggestion")
                 .and_then(|v| v.as_str())
                 .unwrap_or("");
+            let attempt = envelope
+                .payload
+                .get("attempt")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0) as u32;
+            let allows_retry = envelope
+                .payload
+                .get("allows_patch_retry")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
 
             let mut msg = format!("Update REJECTED: {}", reason);
+            if attempt > 0 {
+                msg.push_str(&format!(" (attempt {})", attempt));
+            }
             if !errors.is_empty() {
                 msg.push_str(&format!("\n\nCompilation errors:\n{}", errors));
             }
             if !suggestion.is_empty() {
                 msg.push_str(&format!("\n\nSuggestion: {}", suggestion));
+            }
+            if allows_retry {
+                msg.push_str("\n\nYou may fix the errors and call submit_update again. The same version number will be reused.");
             }
             msg
         }

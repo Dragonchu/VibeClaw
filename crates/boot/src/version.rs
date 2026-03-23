@@ -44,6 +44,13 @@ pub struct VersionManager {
     rollback_binary_path: PathBuf,
     consecutive_failures: u32,
     locked: bool,
+    /// Version currently being attempted (e.g. "V2").  Set on first
+    /// allocation, cleared on success.  When set, the next
+    /// `reuse_pending_or_allocate()` reuses this version instead of
+    /// allocating a new branch.
+    pending_version: Option<String>,
+    /// 1-based attempt counter within the current pending version.
+    pending_attempt: u32,
 }
 
 /// Information about a newly allocated version.
@@ -73,6 +80,8 @@ impl VersionManager {
             rollback_binary_path,
             consecutive_failures: 0,
             locked: false,
+            pending_version: None,
+            pending_attempt: 0,
         }
     }
 
@@ -444,6 +453,66 @@ impl VersionManager {
         })
     }
 
+    /// If a previous version failed compilation, reuse it (new attempt);
+    /// otherwise allocate a fresh version.  Returns `(VersionInfo, attempt)`
+    /// where `attempt` is 1-based.
+    pub fn reuse_pending_or_allocate(&mut self) -> Result<(VersionInfo, u32), String> {
+        if self.locked {
+            return Err(
+                "Version manager is locked due to consecutive failures. Human intervention required."
+                    .to_string(),
+            );
+        }
+
+        if let Some(ref version) = self.pending_version {
+            self.pending_attempt += 1;
+            let attempt = self.pending_attempt;
+            let info = VersionInfo {
+                version: version.clone(),
+                source_dir: self.source_dir.clone(),
+                build_dir: self.worktree_dir(version),
+                binary_path: self.binary_path.clone(),
+            };
+            tracing::info!(
+                version = %version,
+                attempt = attempt,
+                "Reusing pending version for retry"
+            );
+            Ok((info, attempt))
+        } else {
+            let info = self.allocate_version()?;
+            self.pending_version = Some(info.version.clone());
+            self.pending_attempt = 1;
+            Ok((info, 1))
+        }
+    }
+
+    /// Mark the current version as pending (failed compilation, eligible
+    /// for retry).
+    pub fn mark_pending(&mut self, version: &str) {
+        self.pending_version = Some(version.to_string());
+        tracing::info!(
+            version = %version,
+            attempt = self.pending_attempt,
+            "Version marked as pending (awaiting retry)"
+        );
+    }
+
+    /// Clear the pending version on success.  Also resets the
+    /// consecutive failure counter.
+    pub fn clear_pending(&mut self) {
+        if let Some(ref v) = self.pending_version {
+            tracing::info!(
+                version = %v,
+                attempts = self.pending_attempt,
+                "Version completed — clearing pending state"
+            );
+        }
+        self.pending_version = None;
+        self.pending_attempt = 0;
+        self.consecutive_failures = 0;
+    }
+
     /// Create an isolated worktree for the target version branch, copy
     /// source files into it, stage, and commit.
     ///
@@ -805,6 +874,10 @@ impl VersionManager {
 
     pub fn is_locked(&self) -> bool {
         self.locked
+    }
+
+    pub fn pending_attempt(&self) -> u32 {
+        self.pending_attempt
     }
 
     pub fn unlock(&mut self) -> bool {
@@ -1901,5 +1974,110 @@ mod tests {
             .output()
             .unwrap();
         String::from_utf8_lossy(&out.stdout).trim().to_string()
+    }
+
+    // -- pending version / attempt tracking tests --
+
+    #[test]
+    fn reuse_pending_or_allocate_creates_new_version_when_no_pending() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut mgr = VersionManager::new(tmp.path());
+
+        let (info, attempt) = mgr.reuse_pending_or_allocate().expect("first allocation");
+        assert_eq!(info.version, "V1");
+        assert_eq!(attempt, 1);
+        assert_eq!(mgr.pending_attempt(), 1);
+    }
+
+    #[test]
+    fn reuse_pending_reuses_version_after_mark_pending() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut mgr = VersionManager::new(tmp.path());
+
+        let (info, attempt) = mgr.reuse_pending_or_allocate().expect("first");
+        assert_eq!(info.version, "V1");
+        assert_eq!(attempt, 1);
+
+        // Simulate compile failure.
+        mgr.mark_pending("V1");
+        mgr.record_failure();
+
+        // Next allocation should reuse V1, attempt 2.
+        let (info2, attempt2) = mgr.reuse_pending_or_allocate().expect("retry");
+        assert_eq!(info2.version, "V1");
+        assert_eq!(attempt2, 2);
+    }
+
+    #[test]
+    fn clear_pending_allocates_new_version_number() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut mgr = VersionManager::new(tmp.path());
+
+        let (info, _) = mgr.reuse_pending_or_allocate().expect("V1");
+        assert_eq!(info.version, "V1");
+
+        // Simulate success.
+        mgr.clear_pending();
+
+        // Next allocation should be V2.
+        let (info2, attempt2) = mgr.reuse_pending_or_allocate().expect("V2");
+        assert_eq!(info2.version, "V2");
+        assert_eq!(attempt2, 1);
+    }
+
+    #[test]
+    fn multiple_retries_then_success_then_new_version() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut mgr = VersionManager::new(tmp.path());
+
+        // First attempt at V1.
+        let (v, a) = mgr.reuse_pending_or_allocate().unwrap();
+        assert_eq!((v.version.as_str(), a), ("V1", 1));
+
+        // Fail attempt 1.
+        mgr.mark_pending("V1");
+        mgr.record_failure();
+
+        // Retry → attempt 2.
+        let (v, a) = mgr.reuse_pending_or_allocate().unwrap();
+        assert_eq!((v.version.as_str(), a), ("V1", 2));
+
+        // Fail attempt 2.
+        mgr.mark_pending("V1");
+        mgr.record_failure();
+
+        // Retry → attempt 3 (not locked yet, failures < 3).
+        let (v, a) = mgr.reuse_pending_or_allocate().unwrap();
+        assert_eq!((v.version.as_str(), a), ("V1", 3));
+
+        // Succeed!
+        mgr.clear_pending();
+        assert_eq!(mgr.pending_attempt(), 0);
+        assert_eq!(mgr.consecutive_failures, 0);
+
+        // Next evolution → V2.
+        let (v, a) = mgr.reuse_pending_or_allocate().unwrap();
+        assert_eq!((v.version.as_str(), a), ("V2", 1));
+    }
+
+    #[test]
+    fn lockout_after_max_consecutive_failures() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut mgr = VersionManager::new(tmp.path());
+
+        let (_, _) = mgr.reuse_pending_or_allocate().unwrap();
+        mgr.mark_pending("V1");
+        mgr.record_failure(); // 1
+        mgr.mark_pending("V1");
+        mgr.record_failure(); // 2
+        mgr.mark_pending("V1");
+        let locked = mgr.record_failure(); // 3 → locked
+        assert!(locked);
+        assert!(mgr.is_locked());
+
+        // Should reject allocation when locked.
+        let err = mgr.reuse_pending_or_allocate();
+        assert!(err.is_err());
+        assert!(err.unwrap_err().contains("locked"));
     }
 }

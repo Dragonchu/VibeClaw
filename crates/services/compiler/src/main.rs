@@ -9,6 +9,7 @@ use std::time::Duration;
 
 use tokio::net::UnixStream;
 use tokio::process::Command;
+use tokio::sync::mpsc;
 
 use reloopy_ipc::messages::{
     CompileRequest, CompileResult, Envelope, HealthReport, Hello, LeaseRenew, Welcome, msg_types,
@@ -110,6 +111,10 @@ async fn run_service(config: &Config) -> Result<(), Box<dyn std::error::Error + 
 
     let mut heartbeat_interval = tokio::time::interval(config.heartbeat_interval);
     let mut tasks_processed: u64 = 0;
+    let mut compiling = false;
+
+    // Channel for receiving compilation results from spawned tasks.
+    let (compile_tx, mut compile_rx) = mpsc::channel::<(CompileResult, String, String)>(1);
 
     loop {
         tokio::select! {
@@ -128,7 +133,7 @@ async fn run_service(config: &Config) -> Result<(), Box<dyn std::error::Error + 
                     msg_type: msg_types::LEASE_RENEW.to_string(),
                     id: new_msg_id(),
                     payload: serde_json::to_value(&renew)?,
-                fds: Vec::new(),
+                    fds: Vec::new(),
                 };
 
                 wire::write_envelope(&mut writer, &envelope).await?;
@@ -150,29 +155,76 @@ async fn run_service(config: &Config) -> Result<(), Box<dyn std::error::Error + 
                         info!("Runlevel change: {}", envelope.payload);
                     }
                     msg_types::COMPILE_REQUEST => {
-                        let result = handle_compile_request(&envelope).await;
-                        let response = Envelope {
-                            from: IDENTITY.to_string(),
-                            to: envelope.from.clone(),
-                            msg_type: msg_types::COMPILE_RESULT.to_string(),
-                            id: envelope.id.clone(),
-                            payload: serde_json::to_value(&result)?,
-                        fds: Vec::new(),
-                        };
-                        wire::write_envelope(&mut writer, &response).await?;
-                        tasks_processed += 1;
+                        if compiling {
+                            warn!("Rejecting compile request — already compiling");
+                            let busy = CompileResult {
+                                version: envelope.payload.get("version")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("")
+                                    .to_string(),
+                                success: false,
+                                binary_path: None,
+                                errors: Some("Compiler busy — compilation already in progress".to_string()),
+                            };
+                            let response = Envelope {
+                                from: IDENTITY.to_string(),
+                                to: envelope.from.clone(),
+                                msg_type: msg_types::COMPILE_RESULT.to_string(),
+                                id: envelope.id.clone(),
+                                payload: serde_json::to_value(&busy)?,
+                                fds: Vec::new(),
+                            };
+                            wire::write_envelope(&mut writer, &response).await?;
+                            continue;
+                        }
+
+                        compiling = true;
+                        let tx = compile_tx.clone();
+                        let msg_id = envelope.id.clone();
+                        let from = envelope.from.clone();
+                        let payload = envelope.payload.clone();
+
+                        tokio::spawn(async move {
+                            let result = handle_compile_request_payload(payload).await;
+                            // Ignore send error — service is shutting down.
+                            tx.send((result, msg_id, from)).await.ok();
+                        });
                     }
                     other => {
                         warn!("Unhandled message type: {}", other);
                     }
                 }
             }
+
+            Some((result, msg_id, from)) = compile_rx.recv() => {
+                compiling = false;
+                tasks_processed += 1;
+
+                let success = result.success;
+                let version = result.version.clone();
+                let response = Envelope {
+                    from: IDENTITY.to_string(),
+                    to: from,
+                    msg_type: msg_types::COMPILE_RESULT.to_string(),
+                    id: msg_id,
+                    payload: serde_json::to_value(&result)?,
+                    fds: Vec::new(),
+                };
+                wire::write_envelope(&mut writer, &response).await?;
+
+                if success {
+                    info!(version = %version, "Compile result sent (success)");
+                } else {
+                    warn!(version = %version, "Compile result sent (failure)");
+                }
+            }
         }
     }
 }
 
-async fn handle_compile_request(envelope: &Envelope) -> CompileResult {
-    let request: CompileRequest = match serde_json::from_value(envelope.payload.clone()) {
+/// Run compilation from a JSON payload (called inside a spawned task).
+async fn handle_compile_request_payload(payload: serde_json::Value) -> CompileResult {
+    let request: CompileRequest = match serde_json::from_value(payload) {
         Ok(r) => r,
         Err(e) => {
             return CompileResult {
