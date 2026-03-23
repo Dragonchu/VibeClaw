@@ -39,12 +39,14 @@ _launch_bg() {
     local log="${LOG_DIR}/${name}.log"
 
     if [[ "$DEV_MODE" -eq 1 ]]; then
-        # Write BASHPID to a temp file before exec so we can report the real PID.
+        # Use `bash -c 'echo $$; exec ...'` instead of $BASHPID so this works
+        # on bash 3.2 (macOS default). $$  inside a child process is its own PID;
+        # exec then replaces that process with the service binary, keeping the PID.
         local pid_file
         pid_file=$(mktemp)
-        ( echo "$BASHPID" > "$pid_file"; exec "$@" ) \
+        bash -c 'echo $$ > "$1"; exec "${@:2}"' _ "$pid_file" "$@" \
             2>&1 | prefix_log "$label" "$color" | tee -a "$log" &
-        # Wait up to 1 s for the subshell to write its PID.
+        # Wait up to 1 s for the child to write its PID.
         local retries=0
         while [[ ! -s "$pid_file" ]] && (( retries < 20 )); do
             sleep 0.05
