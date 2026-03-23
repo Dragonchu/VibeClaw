@@ -278,7 +278,21 @@ impl VersionManager {
             ));
         }
 
-        tracing::info!(source_dir = %self.source_dir.display(), "Git repo initialised with seed source");
+        // Create V0 branch from the seed commit and switch to it so that
+        // current_version() returns Some("V0") from the very start.
+        let o = Command::new("git")
+            .args(["checkout", "-b", "V0"])
+            .current_dir(&self.source_dir)
+            .output()
+            .map_err(|e| format!("git checkout -b V0 failed: {}", e))?;
+        if !o.status.success() {
+            return Err(format!(
+                "git checkout -b V0 failed: {}",
+                String::from_utf8_lossy(&o.stderr)
+            ));
+        }
+
+        tracing::info!(source_dir = %self.source_dir.display(), "Git repo initialised with seed source (V0)");
         Ok(())
     }
 
@@ -1043,14 +1057,14 @@ mod tests {
             .unwrap();
         assert!(out.status.success(), "V1 branch must exist");
 
-        // HEAD should still be on `main` (allocate doesn't switch).
+        // HEAD should still be on `V0` (allocate doesn't switch).
         let out = Command::new("git")
             .args(["branch", "--show-current"])
             .current_dir(&mgr.source_dir)
             .output()
             .unwrap();
         let current = String::from_utf8_lossy(&out.stdout).trim().to_string();
-        assert_eq!(current, "main", "HEAD must remain on main after allocate");
+        assert_eq!(current, "V0", "HEAD must remain on V0 after allocate");
     }
 
     #[test]
@@ -1076,11 +1090,12 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let mut mgr = VersionManager::new(tmp.path());
 
+        // Before any allocation, repo doesn't exist yet.
         assert_eq!(mgr.current_version(), None);
 
         mgr.allocate_version().expect("V1");
-        // After allocate, HEAD is still on `main` (not a V* branch).
-        assert_eq!(mgr.current_version(), None);
+        // After allocate, HEAD is on V0 (init created V0, allocate doesn't switch).
+        assert_eq!(mgr.current_version(), Some("V0".to_string()));
 
         mgr.switch_to("V1").unwrap();
         assert_eq!(mgr.current_version(), Some("V1".to_string()));
@@ -1143,7 +1158,7 @@ mod tests {
         mgr.allocate_version().expect("V3");
 
         let versions = mgr.list_versions();
-        assert_eq!(versions, vec!["V1", "V2", "V3"]);
+        assert_eq!(versions, vec!["V0", "V1", "V2", "V3"]);
     }
 
     #[test]
@@ -1159,9 +1174,9 @@ mod tests {
         mgr.switch_to("V3").unwrap();
         // Now on V3, rollback = V2.
 
-        // Keep 0 beyond current (V3) and rollback (V2) → V1 should be removed.
+        // Keep 0 beyond current (V3) and rollback (V2) → V0 and V1 should be removed.
         let removed = mgr.cleanup_old_versions(0).unwrap();
-        assert_eq!(removed, vec!["V1"]);
+        assert_eq!(removed, vec!["V0", "V1"]);
 
         let remaining = mgr.list_versions();
         assert!(remaining.contains(&"V2".to_string()));
@@ -1392,14 +1407,14 @@ mod tests {
         mgr.commit_version_source(&v1, &staging)
             .expect("commit_version_source must succeed even with new files");
 
-        // HEAD should be restored to main.
+        // HEAD should be restored to V0.
         let out = Command::new("git")
             .args(["branch", "--show-current"])
             .current_dir(&v1.source_dir)
             .output()
             .unwrap();
         let current = String::from_utf8_lossy(&out.stdout).trim().to_string();
-        assert_eq!(current, "main", "HEAD must be restored to main");
+        assert_eq!(current, "V0", "HEAD must be restored to V0");
 
         // V1 branch must contain the committed Cargo.lock.
         let show = Command::new("git")
@@ -1596,16 +1611,16 @@ mod tests {
         fs::write(staging.join("Cargo.toml"), b"[package]\nname=\"test\"\n").unwrap();
         fs::write(staging.join("src").join("main.rs"), b"fn main() {}").unwrap();
 
-        // HEAD should be on `main` before and after commit.
+        // HEAD should be on V0 before and after commit.
         let head_before = git_current_branch(&mgr.source_dir);
-        assert_eq!(head_before, "main");
+        assert_eq!(head_before, "V0");
 
         mgr.commit_version_source(&v1, &staging).unwrap();
 
         let head_after = git_current_branch(&mgr.source_dir);
         assert_eq!(
-            head_after, "main",
-            "HEAD must stay on main after worktree commit"
+            head_after, "V0",
+            "HEAD must stay on V0 after worktree commit"
         );
 
         // Clean up.
@@ -1837,11 +1852,11 @@ mod tests {
             String::from_utf8_lossy(&check.stderr)
         );
 
-        // Main HEAD is still on `main`.
+        // Main HEAD is still on V0.
         let head = git_current_branch(&mgr.source_dir);
         assert_eq!(
-            head, "main",
-            "HEAD must remain on main during worktree build"
+            head, "V0",
+            "HEAD must remain on V0 during worktree build"
         );
 
         mgr.cleanup_worktree("V1");
