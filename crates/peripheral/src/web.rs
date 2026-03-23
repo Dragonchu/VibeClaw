@@ -73,19 +73,21 @@ async fn chat<L: LlmClient + 'static>(
             Ok(Ok(AgentOutcome::Done)) => {}
             Ok(Err(e)) => {
                 let err_ev = AgentEvent::Error(e);
-                let _ = sse_tx
+                sse_tx
                     .send(Ok(
                         Event::default().data(serde_json::to_string(&err_ev).unwrap())
                     ))
-                    .await;
+                    .await
+                    .ok();
             }
             Err(e) => {
                 let err_ev = AgentEvent::Error(format!("Agent task panicked: {}", e));
-                let _ = sse_tx
+                sse_tx
                     .send(Ok(
                         Event::default().data(serde_json::to_string(&err_ev).unwrap())
                     ))
-                    .await;
+                    .await
+                    .ok();
             }
         }
     });

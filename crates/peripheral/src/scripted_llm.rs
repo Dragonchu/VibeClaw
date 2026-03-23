@@ -59,23 +59,25 @@ impl LlmClient for ScriptedLlmClient {
             // Emit stream events that mirror what a real LLM would send.
             if let Some(ref tool_calls) = msg.tool_calls {
                 for tc in tool_calls {
-                    let _ = event_tx
+                    event_tx
                         .send(StreamEvent::ToolCallStart {
                             id: tc.id.clone(),
                             name: tc.function.name.clone(),
                         })
-                        .await;
+                        .await
+                        .ok();
                     if !tc.function.arguments.is_empty() {
-                        let _ = event_tx
+                        event_tx
                             .send(StreamEvent::ToolCallArgDelta(tc.function.arguments.clone()))
-                            .await;
+                            .await
+                            .ok();
                     }
                 }
             } else if let Some(ref content) = msg.content {
-                let _ = event_tx.send(StreamEvent::Content(content.clone())).await;
+                event_tx.send(StreamEvent::Content(content.clone())).await.ok();
             }
 
-            let _ = event_tx.send(StreamEvent::Done).await;
+            event_tx.send(StreamEvent::Done).await.ok();
 
             Ok(msg)
         }

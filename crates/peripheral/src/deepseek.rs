@@ -251,9 +251,10 @@ impl LlmClient for DeepSeekClient {
                     Ok(b) => b,
                     Err(e) => {
                         tracing::error!("Stream read error: {}", e);
-                        let _ = event_tx
+                        event_tx
                             .send(StreamEvent::Error(format!("Stream error: {}", e)))
-                            .await;
+                            .await
+                            .ok();
                         break;
                     }
                 };
@@ -275,14 +276,15 @@ impl LlmClient for DeepSeekClient {
 
                     for choice in &chunk.choices {
                         if let Some(ref reasoning) = choice.delta.reasoning_content {
-                            let _ = event_tx
+                            event_tx
                                 .send(StreamEvent::Reasoning(reasoning.clone()))
-                                .await;
+                                .await
+                                .ok();
                         }
 
                         if let Some(ref content) = choice.delta.content {
                             full_content.push_str(content);
-                            let _ = event_tx.send(StreamEvent::Content(content.clone())).await;
+                            event_tx.send(StreamEvent::Content(content.clone())).await.ok();
                         }
 
                         if let Some(ref tcs) = choice.delta.tool_calls {
@@ -291,14 +293,17 @@ impl LlmClient for DeepSeekClient {
                                     apply_tool_call_delta(&mut pending_tool_calls, tc.clone());
 
                                 if let Some((id, name)) = update.start {
-                                    let _ = event_tx
+                                    event_tx
                                         .send(StreamEvent::ToolCallStart { id, name })
-                                        .await;
+                                        .await
+                                        .ok();
                                 }
 
                                 if let Some(args) = update.arg_delta {
-                                    let _ =
-                                        event_tx.send(StreamEvent::ToolCallArgDelta(args)).await;
+                                    event_tx
+                                        .send(StreamEvent::ToolCallArgDelta(args))
+                                        .await
+                                        .ok();
                                 }
                             }
                         }
@@ -308,7 +313,7 @@ impl LlmClient for DeepSeekClient {
 
             let tool_calls: Vec<ToolCall> = pending_tool_calls.into_values().collect();
 
-            let _ = event_tx.send(StreamEvent::Done).await;
+            event_tx.send(StreamEvent::Done).await.ok();
 
             Ok(ChatMessage {
                 role: "assistant".to_string(),

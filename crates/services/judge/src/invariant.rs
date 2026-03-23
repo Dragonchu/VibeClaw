@@ -3,6 +3,7 @@ use std::time::Duration;
 
 use reloopy_ipc::messages::{Envelope, Hello, InvariantResult, LeaseRenew, Welcome, msg_types};
 use reloopy_ipc::wire;
+use reloopy_ipc::LogErr;
 use serde::Deserialize;
 use tokio::net::{UnixListener, UnixStream};
 use tokio::process::{Child, Command};
@@ -94,7 +95,7 @@ impl InvariantRunner {
 
         let sock_path = temp_dir.join("test.sock");
         if sock_path.exists() {
-            let _ = std::fs::remove_file(&sock_path);
+            std::fs::remove_file(&sock_path).warn_err();
         }
 
         let listener = UnixListener::bind(&sock_path)
@@ -116,7 +117,7 @@ impl InvariantRunner {
     }
 
     fn cleanup_temp(temp_dir: &Path) {
-        let _ = std::fs::remove_dir_all(temp_dir);
+        std::fs::remove_dir_all(temp_dir).warn_err();
     }
 
     async fn test_handshake(&self, binary_path: &str) -> Result<(), String> {

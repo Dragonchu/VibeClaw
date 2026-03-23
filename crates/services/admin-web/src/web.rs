@@ -234,7 +234,7 @@ async fn events_sse(State(state): State<Arc<AppState>>) -> impl IntoResponse {
             Ok(c) => c,
             Err(e) => {
                 let msg = serde_json::json!({"error": e.to_string()}).to_string();
-                let _ = tx.send(Ok(Event::default().event("error").data(msg))).await;
+                tx.send(Ok(Event::default().event("error").data(msg))).await.ok();
                 return;
             }
         };
@@ -243,7 +243,7 @@ async fn events_sse(State(state): State<Arc<AppState>>) -> impl IntoResponse {
             Ok(r) => r,
             Err(e) => {
                 let msg = serde_json::json!({"error": e.to_string()}).to_string();
-                let _ = tx.send(Ok(Event::default().event("error").data(msg))).await;
+                tx.send(Ok(Event::default().event("error").data(msg))).await.ok();
                 return;
             }
         };

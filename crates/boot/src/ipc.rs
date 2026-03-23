@@ -21,6 +21,7 @@ use tokio::sync::{mpsc, oneshot};
 
 use reloopy_ipc::messages::Envelope;
 use reloopy_ipc::wire;
+use reloopy_ipc::LogErr;
 
 // ---------------------------------------------------------------------------
 // Peer handle (internal to the actor)
@@ -109,7 +110,10 @@ impl RouterHandle {
 
     /// Broadcast a message to all connected peers.
     pub async fn broadcast(&self, msg: Envelope) {
-        let _ = self.cmd_tx.send(RouterCommand::Broadcast { msg }).await;
+        self.cmd_tx
+            .send(RouterCommand::Broadcast { msg })
+            .await
+            .warn_err();
     }
 
     /// Get the list of currently connected peer identities.
@@ -128,20 +132,20 @@ impl RouterHandle {
 
     /// Remove a peer from the routing table.
     pub async fn remove_peer(&self, identity: &str) {
-        let _ = self
-            .cmd_tx
+        self.cmd_tx
             .send(RouterCommand::RemovePeer {
                 identity: identity.to_string(),
             })
-            .await;
+            .await
+            .warn_err();
     }
 
     /// Register a new peer with the router actor.
     async fn register_peer(&self, identity: String, tx: mpsc::Sender<Envelope>) {
-        let _ = self
-            .cmd_tx
+        self.cmd_tx
             .send(RouterCommand::RegisterPeer { identity, tx })
-            .await;
+            .await
+            .warn_err();
     }
 }
 
@@ -262,7 +266,7 @@ impl RouterActor {
                 } else {
                     Err(format!("Peer '{}' not connected", identity))
                 };
-                let _ = reply.send(result);
+                reply.send(result).ok();
             }
             RouterCommand::Broadcast { msg } => {
                 for (identity, peer) in &self.peers {
@@ -272,7 +276,7 @@ impl RouterActor {
                 }
             }
             RouterCommand::ConnectedPeers { reply } => {
-                let _ = reply.send(self.peers.keys().cloned().collect());
+                reply.send(self.peers.keys().cloned().collect()).ok();
             }
         }
     }

@@ -15,6 +15,8 @@ use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
 
+use reloopy_ipc::LogErr;
+
 type HmacSha256 = Hmac<Sha256>;
 
 const SECRET_KEY_FILE: &str = "secret.key";
@@ -84,7 +86,8 @@ impl ConstitutionManager {
             #[cfg(unix)]
             {
                 use std::os::unix::fs::PermissionsExt;
-                let _ = fs::set_permissions(&key_path, fs::Permissions::from_mode(0o600));
+                let _ = fs::set_permissions(&key_path, fs::Permissions::from_mode(0o600))
+                    .warn_err();
             }
 
             tracing::info!(path = %key_path.display(), "Generated new HMAC secret key");

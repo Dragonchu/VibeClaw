@@ -11,6 +11,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use reloopy_ipc::LogErr;
+
 const MAX_CONSECUTIVE_FAILURES: u32 = 3;
 
 /// Git ref used to persist the rollback target across restarts.
@@ -475,14 +477,15 @@ impl VersionManager {
                     path = %wt_dir.display(),
                     "git worktree remove failed; falling back to manual removal"
                 );
-                let _ = fs::remove_dir_all(&wt_dir);
+                fs::remove_dir_all(&wt_dir).warn_err();
                 // Prune stale bookkeeping left by the manual removal so
                 // `git worktree add` below does not fail with "already
                 // checked out" / "already registered" errors.
-                let _ = Command::new("git")
+                Command::new("git")
                     .args(["worktree", "prune"])
                     .current_dir(&self.source_dir)
-                    .output();
+                    .output()
+                    .warn_err();
             }
         }
 
@@ -577,7 +580,7 @@ impl VersionManager {
                     path = %wt_dir.display(),
                     "git worktree remove failed; falling back to manual removal"
                 );
-                let _ = fs::remove_dir_all(&wt_dir);
+                fs::remove_dir_all(&wt_dir).warn_err();
             }
         }
         if let Ok(o) = Command::new("git")

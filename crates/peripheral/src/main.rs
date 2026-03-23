@@ -16,6 +16,7 @@ use tokio::net::TcpListener;
 use tokio::sync::{Mutex, mpsc};
 
 use reloopy_ipc::messages::{self, Envelope, msg_types};
+use reloopy_ipc::LogErr;
 
 use crate::agent::Agent;
 use crate::deepseek::DeepSeekClient;
@@ -259,7 +260,7 @@ async fn run(
                         .and_then(|v: &serde_json::Value| v.as_str())
                         .unwrap_or("unknown");
                     tracing::info!(%reason, "Shutdown received");
-                    let _ = message_tx.send(envelope).await;
+                    message_tx.send(envelope).await.warn_err();
                     shutdown_for_ipc.notify_waiters();
                     break;
                 }
@@ -299,11 +300,11 @@ async fn run(
                                 .unwrap_or_default(),
                             fds: vec![Arc::new(unsafe { OwnedFd::from_raw_fd(fd) })],
                         };
-                        let _ = ipc_tx_for_ipc.send(handoff).await;
+                        ipc_tx_for_ipc.send(handoff).await.warn_err();
                     }
                 }
                 msg_types::UPDATE_ACCEPTED | msg_types::UPDATE_REJECTED => {
-                    let _ = message_tx.send(envelope).await;
+                    message_tx.send(envelope).await.warn_err();
                 }
                 other => {
                     tracing::debug!(msg_type = %other, "Unhandled message");

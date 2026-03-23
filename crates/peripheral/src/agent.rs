@@ -148,30 +148,33 @@ impl<L: LlmClient> Agent<L> {
 
                     match result {
                         ToolResult::Output(output) => {
-                            let _ = event_tx
+                            event_tx
                                 .send(AgentEvent::ToolResult {
                                     name: tc.function.name.clone(),
                                     output: truncate_lines(&output, TOOL_TRUNCATE_LINES),
                                 })
-                                .await;
+                                .await
+                                .ok();
                             self.conversation.push(ChatMessage::tool(&output, &tc.id));
                         }
                         ToolResult::SubmitUpdate(source_path) => {
-                            let _ = event_tx
+                            event_tx
                                 .send(AgentEvent::SubmitUpdate {
                                     source_path: source_path.clone(),
                                 })
-                                .await;
+                                .await
+                                .ok();
 
                             let result_text =
                                 self.submit_and_wait_result(&source_path, &event_tx).await;
 
-                            let _ = event_tx
+                            event_tx
                                 .send(AgentEvent::ToolResult {
                                     name: "submit_update".to_string(),
                                     output: truncate_lines(&result_text, TOOL_TRUNCATE_LINES),
                                 })
-                                .await;
+                                .await
+                                .ok();
                             self.conversation
                                 .push(ChatMessage::tool(&result_text, &tc.id));
                         }
@@ -185,7 +188,7 @@ impl<L: LlmClient> Agent<L> {
                     tool_calls: None,
                     tool_call_id: None,
                 });
-                let _ = event_tx.send(AgentEvent::Done).await;
+                event_tx.send(AgentEvent::Done).await.ok();
                 return Ok(AgentOutcome::Done);
             }
         }
@@ -208,11 +211,12 @@ impl<L: LlmClient> Agent<L> {
 
                 // If Boot sends SHUTDOWN after acceptance, notify frontend
                 if envelope.msg_type == msg_types::SHUTDOWN {
-                    let _ = event_tx
+                    event_tx
                         .send(AgentEvent::Error(
                             "Hot replacement in progress. Shutting down...".into(),
                         ))
-                        .await;
+                        .await
+                        .ok();
                 }
 
                 result_text

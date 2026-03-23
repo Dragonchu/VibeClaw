@@ -22,6 +22,7 @@ use crate::state::{MigrationTransaction, StateStore};
 use crate::version::VersionManager;
 use libc;
 use reloopy_ipc::messages::{self, Envelope, LeaseAck, TestVerdict, Welcome, msg_types};
+use reloopy_ipc::{LogErr, to_json_value};
 use std::os::unix::io::{AsRawFd, OwnedFd};
 
 #[derive(Debug, Clone)]
@@ -424,7 +425,7 @@ impl Microkernel {
             to: from.clone(),
             msg_type: msg_types::WELCOME.to_string(),
             id: envelope.id.clone(),
-            payload: serde_json::to_value(&welcome).unwrap_or_default(),
+            payload: to_json_value(&welcome),
             fds: listener_fd_to_send
                 .as_ref()
                 .map(|fd| vec![fd.clone()])
@@ -451,10 +452,10 @@ impl Microkernel {
                     to: "peripheral".to_string(),
                     msg_type: msg_types::SHUTDOWN.to_string(),
                     id: String::new(),
-                    payload: serde_json::to_value(&shutdown).unwrap_or_default(),
+                    payload: to_json_value(&shutdown),
                     fds: Vec::new(),
                 };
-                let _ = router.broadcast(shutdown_envelope).await;
+                router.broadcast(shutdown_envelope).await;
                 self.kill_peripheral_process().await;
                 self.peripheral_child = child;
                 self.send_audit(
@@ -572,7 +573,7 @@ impl Microkernel {
                         router,
                         "resource_violation",
                         None,
-                        serde_json::to_value(&alert).unwrap_or_default(),
+                        to_json_value(&alert),
                     )
                     .await;
                 }
@@ -606,7 +607,7 @@ impl Microkernel {
             to: from.clone(),
             msg_type: msg_types::LEASE_ACK.to_string(),
             id: envelope.id.clone(),
-            payload: serde_json::to_value(&ack).unwrap_or_default(),
+            payload: to_json_value(&ack),
             fds: Vec::new(),
         };
 
@@ -644,10 +645,10 @@ impl Microkernel {
                 to: from,
                 msg_type: msg_types::UPDATE_REJECTED.to_string(),
                 id: envelope.id,
-                payload: serde_json::to_value(&rejected).unwrap_or_default(),
+                payload: to_json_value(&rejected),
                 fds: Vec::new(),
             };
-            let _ = router.send(response).await;
+            router.send(response).await.warn_err();
             return;
         }
 
@@ -663,10 +664,10 @@ impl Microkernel {
                 to: from,
                 msg_type: msg_types::UPDATE_REJECTED.to_string(),
                 id: envelope.id,
-                payload: serde_json::to_value(&rejected).unwrap_or_default(),
+                payload: to_json_value(&rejected),
                 fds: Vec::new(),
             };
-            let _ = router.send(response).await;
+            router.send(response).await.warn_err();
             return;
         }
 
@@ -685,10 +686,10 @@ impl Microkernel {
                     to: from,
                     msg_type: msg_types::UPDATE_REJECTED.to_string(),
                     id: envelope.id,
-                    payload: serde_json::to_value(&rejected).unwrap_or_default(),
+                    payload: to_json_value(&rejected),
                     fds: Vec::new(),
                 };
-                let _ = router.send(response).await;
+                router.send(response).await.warn_err();
                 return;
             }
         };
@@ -710,10 +711,10 @@ impl Microkernel {
                 to: from,
                 msg_type: msg_types::UPDATE_REJECTED.to_string(),
                 id: envelope.id,
-                payload: serde_json::to_value(&rejected).unwrap_or_default(),
+                payload: to_json_value(&rejected),
                 fds: Vec::new(),
             };
-            let _ = router.send(response).await;
+            router.send(response).await.warn_err();
             return;
         }
 
@@ -737,7 +738,7 @@ impl Microkernel {
             to: "compiler".to_string(),
             msg_type: msg_types::COMPILE_REQUEST.to_string(),
             id: envelope.id,
-            payload: serde_json::to_value(&compile_req).unwrap_or_default(),
+            payload: to_json_value(&compile_req),
             fds: Vec::new(),
         };
 
@@ -754,10 +755,10 @@ impl Microkernel {
                 to: from,
                 msg_type: msg_types::UPDATE_REJECTED.to_string(),
                 id: String::new(),
-                payload: serde_json::to_value(&rejected).unwrap_or_default(),
+                payload: to_json_value(&rejected),
                 fds: Vec::new(),
             };
-            let _ = router.send(response).await;
+            router.send(response).await.warn_err();
         }
     }
 
@@ -787,7 +788,7 @@ impl Microkernel {
                 log_line: result.errors.clone().map(|e| e.lines().last().unwrap_or_default().to_string()),
                 finished: true,
             };
-            self.broadcast_to_subscribers("compile", msg_types::COMPILE_PROGRESS, serde_json::to_value(&progress).unwrap_or_default(), router).await;
+            self.broadcast_to_subscribers("compile", msg_types::COMPILE_PROGRESS, to_json_value(&progress), router).await;
 
             let rejected = messages::UpdateRejected {
                 version: result.version,
@@ -800,10 +801,10 @@ impl Microkernel {
                 to: "peripheral".to_string(),
                 msg_type: msg_types::UPDATE_REJECTED.to_string(),
                 id: envelope.id,
-                payload: serde_json::to_value(&rejected).unwrap_or_default(),
+                payload: to_json_value(&rejected),
                 fds: Vec::new(),
             };
-            let _ = router.send_to("peripheral", response).await;
+            router.send_to("peripheral", response).await.warn_err();
             return;
         }
 
@@ -817,7 +818,7 @@ impl Microkernel {
             log_line: None,
             finished: true,
         };
-        self.broadcast_to_subscribers("compile", msg_types::COMPILE_PROGRESS, serde_json::to_value(&progress).unwrap_or_default(), router).await;
+        self.broadcast_to_subscribers("compile", msg_types::COMPILE_PROGRESS, to_json_value(&progress), router).await;
 
         if let Some(binary_path_str) = &result.binary_path {
             let binary_path = PathBuf::from(binary_path_str);
@@ -833,7 +834,7 @@ impl Microkernel {
                     let _ = std::fs::set_permissions(
                         &target_binary,
                         std::fs::Permissions::from_mode(0o755),
-                    );
+                    ).warn_err();
                 }
             }
         }
@@ -857,7 +858,7 @@ impl Microkernel {
             to: "judge".to_string(),
             msg_type: msg_types::TEST_REQUEST.to_string(),
             id: envelope.id.clone(),
-            payload: serde_json::to_value(&test_req).unwrap_or_default(),
+            payload: to_json_value(&test_req),
             fds: Vec::new(),
         };
 
@@ -906,7 +907,7 @@ impl Microkernel {
             last_test_passed: None,
             finished: true,
         };
-        self.broadcast_to_subscribers("test", msg_types::TEST_PROGRESS, serde_json::to_value(&test_progress).unwrap_or_default(), router).await;
+        self.broadcast_to_subscribers("test", msg_types::TEST_PROGRESS, to_json_value(&test_progress), router).await;
 
         match result.verdict {
             TestVerdict::Pass => {
@@ -953,10 +954,10 @@ impl Microkernel {
                     to: "peripheral".to_string(),
                     msg_type: msg_types::PROBATION_STARTED.to_string(),
                     id: envelope.id.clone(),
-                    payload: serde_json::to_value(&probation_msg).unwrap_or_default(),
+                    payload: to_json_value(&probation_msg),
                     fds: Vec::new(),
                 };
-                let _ = router.send_to("peripheral", response).await;
+                router.send_to("peripheral", response).await.warn_err();
 
                 self.send_audit(
                     router,
@@ -1001,10 +1002,10 @@ impl Microkernel {
                     to: "peripheral".to_string(),
                     msg_type: msg_types::UPDATE_REJECTED.to_string(),
                     id: envelope.id.clone(),
-                    payload: serde_json::to_value(&rejected).unwrap_or_default(),
+                    payload: to_json_value(&rejected),
                     fds: Vec::new(),
                 };
-                let _ = router.send_to("peripheral", response).await;
+                router.send_to("peripheral", response).await.warn_err();
 
                 self.send_audit(
                     router,
@@ -1054,7 +1055,7 @@ impl Microkernel {
                         router,
                         "capability_escalation_blocked",
                         Some(new_version),
-                        serde_json::to_value(&escalation).unwrap_or_default(),
+                        to_json_value(&escalation),
                     )
                     .await;
 
@@ -1070,10 +1071,10 @@ impl Microkernel {
                         to: "peripheral".to_string(),
                         msg_type: msg_types::UPDATE_REJECTED.to_string(),
                         id: envelope_id.to_string(),
-                        payload: serde_json::to_value(&rejected).unwrap_or_default(),
+                        payload: to_json_value(&rejected),
                         fds: Vec::new(),
                     };
-                    let _ = router.send_to("peripheral", response).await;
+                    router.send_to("peripheral", response).await.warn_err();
                     return;
                 }
                 Err(e) => {
@@ -1103,10 +1104,10 @@ impl Microkernel {
                             to: "peripheral".to_string(),
                             msg_type: msg_types::UPDATE_REJECTED.to_string(),
                             id: envelope_id.to_string(),
-                            payload: serde_json::to_value(&rejected).unwrap_or_default(),
+                            payload: to_json_value(&rejected),
                             fds: Vec::new(),
                         };
-                        let _ = router.send_to("peripheral", response).await;
+                        router.send_to("peripheral", response).await.warn_err();
                         return;
                     }
                 }
@@ -1137,10 +1138,10 @@ impl Microkernel {
                     to: "peripheral".to_string(),
                     msg_type: msg_types::UPDATE_REJECTED.to_string(),
                     id: envelope_id.to_string(),
-                    payload: serde_json::to_value(&rejected).unwrap_or_default(),
+                    payload: to_json_value(&rejected),
                     fds: Vec::new(),
                 };
-                let _ = router.send_to("peripheral", response).await;
+                router.send_to("peripheral", response).await.warn_err();
                 return;
             }
         }
@@ -1153,10 +1154,10 @@ impl Microkernel {
             to: "peripheral".to_string(),
             msg_type: msg_types::UPDATE_ACCEPTED.to_string(),
             id: envelope_id.to_string(),
-            payload: serde_json::to_value(&accepted).unwrap_or_default(),
+            payload: to_json_value(&accepted),
             fds: Vec::new(),
         };
-        let _ = router.send_to("peripheral", response).await;
+        router.send_to("peripheral", response).await.warn_err();
 
         self.send_audit(
             router,
@@ -1180,10 +1181,10 @@ impl Microkernel {
                 to: "peripheral".to_string(),
                 msg_type: msg_types::PREPARE_HANDOFF.to_string(),
                 id: String::new(),
-                payload: serde_json::to_value(&prepare).unwrap_or_default(),
+                payload: to_json_value(&prepare),
                 fds: Vec::new(),
             };
-            let _ = router.send_to("peripheral", prepare_envelope).await;
+            router.send_to("peripheral", prepare_envelope).await.warn_err();
 
             self.hot_swap = HotSwapState::WaitingForHandoffReady {
                 new_version: new_version.to_string(),
@@ -1226,7 +1227,7 @@ impl Microkernel {
             to: "judge".to_string(),
             msg_type: msg_types::TEST_REQUEST.to_string(),
             id: format!("probation-reeval-{}", envelope_id),
-            payload: serde_json::to_value(&test_req).unwrap_or_default(),
+            payload: to_json_value(&test_req),
             fds: Vec::new(),
         };
 
@@ -1246,10 +1247,10 @@ impl Microkernel {
                 to: "peripheral".to_string(),
                 msg_type: msg_types::PROBATION_ENDED.to_string(),
                 id: envelope_id,
-                payload: serde_json::to_value(&probation_msg).unwrap_or_default(),
+                payload: to_json_value(&probation_msg),
                 fds: Vec::new(),
             };
-            let _ = router.send_to("peripheral", response).await;
+            router.send_to("peripheral", response).await.warn_err();
 
             self.send_audit(
                 router,
@@ -1288,7 +1289,7 @@ impl Microkernel {
             to: "audit".to_string(),
             msg_type: msg_types::AUDIT_LOG.to_string(),
             id: String::new(),
-            payload: serde_json::to_value(&audit).unwrap_or_default(),
+            payload: to_json_value(&audit),
             fds: Vec::new(),
         };
 
@@ -1324,7 +1325,7 @@ impl Microkernel {
             to: from.clone(),
             msg_type: msg_types::GET_STATE_RESPONSE.to_string(),
             id: envelope.id,
-            payload: serde_json::to_value(&resp).unwrap_or_default(),
+            payload: to_json_value(&resp),
             fds: Vec::new(),
         };
 
@@ -1359,7 +1360,7 @@ impl Microkernel {
             to: from.clone(),
             msg_type: msg_types::SET_STATE_ACK.to_string(),
             id: envelope.id,
-            payload: serde_json::to_value(&ack).unwrap_or_default(),
+            payload: to_json_value(&ack),
             fds: Vec::new(),
         };
 
@@ -1500,7 +1501,7 @@ impl Microkernel {
                 tracing::warn!(pid = ?pid, "Failed to kill peripheral process: {}", e);
             } else {
                 // Wait for the process to fully exit and release resources (e.g. bound ports)
-                let _ = child.wait().await;
+                child.wait().await.warn_err();
                 tracing::info!(pid = ?pid, "Peripheral process killed");
             }
         }
@@ -1612,10 +1613,10 @@ impl Microkernel {
                     to: from,
                     msg_type: msg_types::RUNLEVEL_REQUEST_RESULT.to_string(),
                     id: envelope.id,
-                    payload: serde_json::to_value(&result).unwrap_or_default(),
+                    payload: to_json_value(&result),
                     fds: Vec::new(),
                 };
-                let _ = router.send(response).await;
+                router.send(response).await.warn_err();
                 return;
             }
         };
@@ -1646,10 +1647,10 @@ impl Microkernel {
             to: from.clone(),
             msg_type: msg_types::RUNLEVEL_REQUEST_RESULT.to_string(),
             id: envelope.id,
-            payload: serde_json::to_value(&result).unwrap_or_default(),
+            payload: to_json_value(&result),
             fds: Vec::new(),
         };
-        let _ = router.send(response).await;
+        router.send(response).await.warn_err();
 
         if accepted {
             self.broadcast_runlevel_change(from_level, target, &reason, router)
@@ -1730,7 +1731,7 @@ impl Microkernel {
             to: String::new(),
             msg_type: msg_types::RUNLEVEL_CHANGE.to_string(),
             id: String::new(),
-            payload: serde_json::to_value(&change).unwrap_or_default(),
+            payload: to_json_value(&change),
             fds: Vec::new(),
         };
 
@@ -1750,7 +1751,7 @@ impl Microkernel {
             to: String::new(),
             msg_type: msg_types::SHUTDOWN.to_string(),
             id: String::new(),
-            payload: serde_json::to_value(&shutdown).unwrap_or_default(),
+            payload: to_json_value(&shutdown),
             fds: Vec::new(),
         };
 
@@ -1776,7 +1777,7 @@ impl Microkernel {
             .unwrap_or_default(),
             fds: Vec::new(),
         };
-        let _ = router.send(response).await;
+        router.send(response).await.warn_err();
 
         self.initiate_shutdown(router).await;
     }
@@ -1845,7 +1846,7 @@ impl Microkernel {
             to: from.clone(),
             msg_type: msg_types::CONSTITUTION_AMENDMENT_RESULT.to_string(),
             id: envelope.id,
-            payload: serde_json::to_value(&response_payload).unwrap_or_default(),
+            payload: to_json_value(&response_payload),
             fds: Vec::new(),
         };
 
@@ -1926,7 +1927,7 @@ impl Microkernel {
             to: from.clone(),
             msg_type: msg_types::PROTOCOL_EXTENSION_RESULT.to_string(),
             id: envelope.id,
-            payload: serde_json::to_value(&response_payload).unwrap_or_default(),
+            payload: to_json_value(&response_payload),
             fds: Vec::new(),
         };
 
@@ -1970,7 +1971,7 @@ impl Microkernel {
             to: from.clone(),
             msg_type: msg_types::ADMIN_STATUS_RESPONSE.to_string(),
             id: envelope.id,
-            payload: serde_json::to_value(&resp).unwrap_or_default(),
+            payload: to_json_value(&resp),
             fds: Vec::new(),
         };
         if let Err(e) = router.send_to(&from, response).await {
@@ -2000,7 +2001,7 @@ impl Microkernel {
             to: from.clone(),
             msg_type: msg_types::ADMIN_LIST_VERSIONS_RESPONSE.to_string(),
             id: envelope.id,
-            payload: serde_json::to_value(&resp).unwrap_or_default(),
+            payload: to_json_value(&resp),
             fds: Vec::new(),
         };
         if let Err(e) = router.send_to(&from, response).await {
@@ -2038,7 +2039,7 @@ impl Microkernel {
             to: from.clone(),
             msg_type: msg_types::ADMIN_VERSION_DETAIL_RESPONSE.to_string(),
             id: envelope.id,
-            payload: serde_json::to_value(&resp).unwrap_or_default(),
+            payload: to_json_value(&resp),
             fds: Vec::new(),
         };
         if let Err(e) = router.send_to(&from, response).await {
@@ -2068,7 +2069,7 @@ impl Microkernel {
             to: from.clone(),
             msg_type: msg_types::ADMIN_CLEANUP_VERSIONS_RESPONSE.to_string(),
             id: envelope.id,
-            payload: serde_json::to_value(&resp).unwrap_or_default(),
+            payload: to_json_value(&resp),
             fds: Vec::new(),
         };
         if let Err(e) = router.send_to(&from, response).await {
@@ -2124,7 +2125,7 @@ impl Microkernel {
             to: from.clone(),
             msg_type: msg_types::ADMIN_FORCE_ROLLBACK_RESPONSE.to_string(),
             id: envelope.id,
-            payload: serde_json::to_value(&resp).unwrap_or_default(),
+            payload: to_json_value(&resp),
             fds: Vec::new(),
         };
         if let Err(e) = router.send_to(&from, response).await {
@@ -2153,7 +2154,7 @@ impl Microkernel {
             to: from.clone(),
             msg_type: msg_types::ADMIN_LEASE_STATUS_RESPONSE.to_string(),
             id: envelope.id,
-            payload: serde_json::to_value(&resp).unwrap_or_default(),
+            payload: to_json_value(&resp),
             fds: Vec::new(),
         };
         if let Err(e) = router.send_to(&from, response).await {
@@ -2182,7 +2183,7 @@ impl Microkernel {
             to: from.clone(),
             msg_type: msg_types::ADMIN_UNLOCK_VERSION_RESPONSE.to_string(),
             id: envelope.id,
-            payload: serde_json::to_value(&resp).unwrap_or_default(),
+            payload: to_json_value(&resp),
             fds: Vec::new(),
         };
         if let Err(e) = router.send_to(&from, response).await {
@@ -2203,7 +2204,7 @@ impl Microkernel {
             to: from.clone(),
             msg_type: msg_types::ADMIN_AUDIT_QUERY_RESPONSE.to_string(),
             id: envelope.id,
-            payload: serde_json::to_value(&resp).unwrap_or_default(),
+            payload: to_json_value(&resp),
             fds: Vec::new(),
         };
         if let Err(e) = router.send_to(&from, response).await {
@@ -2237,7 +2238,7 @@ impl Microkernel {
             to: from.clone(),
             msg_type: msg_types::EVENT_SUBSCRIBE_ACK.to_string(),
             id: envelope.id,
-            payload: serde_json::to_value(&ack).unwrap_or_default(),
+            payload: to_json_value(&ack),
             fds: Vec::new(),
         };
         if let Err(e) = router.send_to(&from, response).await {

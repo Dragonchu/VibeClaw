@@ -9,5 +9,8 @@
 //! Extended/dynamic message types are NOT defined here — they flow as
 //! opaque `serde_json::Value` payloads inside `Envelope`.
 
+pub mod log_err;
 pub mod messages;
 pub mod wire;
+
+pub use log_err::{to_json_value, LogErr};

@@ -12,6 +12,13 @@ members = [
     "crates/integration-tests",
 ]
 
+[workspace.lints.clippy]
+# Warn when a `#[must_use]` result is discarded with `let _ =`.
+# This catches silently-ignored errors such as `let _ = sender.send(...).await`.
+let_underscore_must_use = "warn"
+# Warn when a future is assigned to `_` without being awaited at all.
+let_underscore_future = "warn"
+
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
