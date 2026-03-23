@@ -57,6 +57,19 @@
 
 <div id="agent-banner">🔄 Evolved to <span id="banner-version"></span> — reloading agent…</div>
 
+<!-- Quick-evolve card: V0 onboarding, visible above all tabs -->
+<div class="container" id="quick-evolve-wrapper" style="display:none;">
+  <div id="quick-evolve-card" class="card" style="border-color:#58a6ff; margin-top:16px;">
+    <h2>🚀 Try Evolution</h2>
+    <p style="font-size:0.85rem; color:#c9d1d9; margin-bottom:12px;">
+      Experience self-evolution in one click: apply a dark-theme patch to the agent UI,
+      compile, and hot-swap — all automatically.
+    </p>
+    <button id="quick-evolve-btn" onclick="quickEvolve()">Apply Dark Theme &amp; Evolve</button>
+    <span id="quick-evolve-status" style="margin-left:12px; font-size:0.82rem; color:#8b949e;"></span>
+  </div>
+</div>
+
 <!-- Agent Tab (default, full-height iframe) -->
 <div id="section-agent" class="section active">
   <iframe id="agent-frame" src="about:blank"></iframe>
@@ -65,15 +78,6 @@
 <!-- Admin Tabs (wrapped in container) -->
 <div class="container">
   <div id="tab-dashboard" class="section">
-    <div id="quick-evolve-card" class="card" style="display:none; border-color:#58a6ff; margin-bottom:16px;">
-      <h2>🚀 Try Evolution</h2>
-      <p style="font-size:0.85rem; color:#c9d1d9; margin-bottom:12px;">
-        Experience self-evolution in one click: apply a dark-theme patch to the agent UI,
-        compile, and hot-swap — all automatically.
-      </p>
-      <button id="quick-evolve-btn" onclick="quickEvolve()">Apply Dark Theme &amp; Evolve</button>
-      <span id="quick-evolve-status" style="margin-left:12px; font-size:0.82rem; color:#8b949e;"></span>
-    </div>
     <div class="grid" style="margin-bottom:16px">
       <div class="stat"><div class="stat-value" id="stat-version">—</div><div class="stat-label">Current Version</div></div>
       <div class="stat"><div class="stat-value" id="stat-rollback">—</div><div class="stat-label">Rollback Target</div></div>
@@ -304,11 +308,11 @@ async function loadPeers() {
 // Quick-evolve (V0 onboarding)
 // ---------------------------------------------------------------------------
 function updateQuickEvolveCard() {
-  const card = document.getElementById('quick-evolve-card');
+  const wrapper = document.getElementById('quick-evolve-wrapper');
   if (lastVersion === 'V0') {
-    card.style.display = 'block';
+    wrapper.style.display = 'block';
   } else {
-    card.style.display = 'none';
+    wrapper.style.display = 'none';
   }
 }
 
@@ -344,9 +348,8 @@ async function quickEvolve() {
 // Boot
 // ---------------------------------------------------------------------------
 initAgent();
-loadStatus();
+loadStatus().then(updateQuickEvolveCard);
 setInterval(() => { loadStatus().then(updateQuickEvolveCard); }, 3000);
-updateQuickEvolveCard();
 </script>
 </body>
 </html>
