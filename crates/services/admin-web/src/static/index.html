@@ -65,6 +65,15 @@
 <!-- Admin Tabs (wrapped in container) -->
 <div class="container">
   <div id="tab-dashboard" class="section">
+    <div id="quick-evolve-card" class="card" style="display:none; border-color:#58a6ff; margin-bottom:16px;">
+      <h2>🚀 Try Evolution</h2>
+      <p style="font-size:0.85rem; color:#c9d1d9; margin-bottom:12px;">
+        Experience self-evolution in one click: apply a dark-theme patch to the agent UI,
+        compile, and hot-swap — all automatically.
+      </p>
+      <button id="quick-evolve-btn" onclick="quickEvolve()">Apply Dark Theme &amp; Evolve</button>
+      <span id="quick-evolve-status" style="margin-left:12px; font-size:0.82rem; color:#8b949e;"></span>
+    </div>
     <div class="grid" style="margin-bottom:16px">
       <div class="stat"><div class="stat-value" id="stat-version">—</div><div class="stat-label">Current Version</div></div>
       <div class="stat"><div class="stat-value" id="stat-rollback">—</div><div class="stat-label">Rollback Target</div></div>
@@ -292,11 +301,52 @@ async function loadPeers() {
 }
 
 // ---------------------------------------------------------------------------
+// Quick-evolve (V0 onboarding)
+// ---------------------------------------------------------------------------
+function updateQuickEvolveCard() {
+  const card = document.getElementById('quick-evolve-card');
+  if (lastVersion === 'V0') {
+    card.style.display = 'block';
+  } else {
+    card.style.display = 'none';
+  }
+}
+
+async function quickEvolve() {
+  const btn = document.getElementById('quick-evolve-btn');
+  const status = document.getElementById('quick-evolve-status');
+  btn.disabled = true;
+  btn.textContent = 'Evolving…';
+  status.textContent = 'Applying patch and submitting to compiler…';
+  status.style.color = '#e3b341';
+
+  try {
+    const r = await fetch('/api/quick-evolve', { method: 'POST' });
+    const d = await r.json();
+    if (d.success) {
+      status.textContent = 'Submitted! Waiting for compilation and hot-swap…';
+      status.style.color = '#3fb950';
+    } else {
+      status.textContent = 'Error: ' + d.error;
+      status.style.color = '#f85149';
+      btn.disabled = false;
+      btn.textContent = 'Apply Dark Theme & Evolve';
+    }
+  } catch(e) {
+    status.textContent = 'Network error: ' + e;
+    status.style.color = '#f85149';
+    btn.disabled = false;
+    btn.textContent = 'Apply Dark Theme & Evolve';
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Boot
 // ---------------------------------------------------------------------------
 initAgent();
 loadStatus();
-setInterval(loadStatus, 3000);
+setInterval(() => { loadStatus().then(updateQuickEvolveCard); }, 3000);
+updateQuickEvolveCard();
 </script>
 </body>
 </html>

@@ -25,6 +25,7 @@ pub struct Config {
     pub sock_path: PathBuf,
     pub http_addr: std::net::SocketAddr,
     pub peripheral_url: String,
+    pub workspace_root: PathBuf,
 }
 
 impl Default for Config {
@@ -39,10 +40,14 @@ impl Default for Config {
             .unwrap_or(7801);
         let peripheral_url = std::env::var("RELOOPY_PERIPHERAL_URL")
             .unwrap_or_else(|_| "http://localhost:7700".to_string());
+        let workspace_root = std::env::var("RELOOPY_WORKSPACE")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| base_dir.join("workspace"));
         Self {
             sock_path: base_dir.join("reloopy.sock"),
             http_addr: ([127, 0, 0, 1], http_port).into(),
             peripheral_url,
+            workspace_root,
         }
     }
 }
@@ -50,6 +55,7 @@ impl Default for Config {
 pub struct AppState {
     pub ipc: Mutex<AdminWebIpc>,
     pub peripheral_url: String,
+    pub workspace_root: PathBuf,
 }
 
 #[tokio::main]
@@ -84,6 +90,7 @@ async fn main() {
     let state = Arc::new(AppState {
         ipc: Mutex::new(ipc),
         peripheral_url: config.peripheral_url.clone(),
+        workspace_root: config.workspace_root.clone(),
     });
 
     // Keep Boot lease alive — admin-web must heartbeat just like any other peer.

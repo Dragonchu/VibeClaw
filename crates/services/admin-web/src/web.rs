@@ -33,6 +33,7 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/api/rollback", post(api_rollback))
         .route("/api/peers", get(api_peers))
         .route("/api/agent-url", get(api_agent_url))
+        .route("/api/quick-evolve", post(api_quick_evolve))
         .with_state(state)
 }
 
@@ -135,4 +136,114 @@ async fn api_peers(State(state): State<Arc<AppState>>) -> axum::response::Respon
         Ok(resp) => axum::Json(resp.payload).into_response(),
         Err(e) => (StatusCode::SERVICE_UNAVAILABLE, format!("IPC error: {}", e)).into_response(),
     }
+}
+
+// ---------------------------------------------------------------------------
+// Quick-evolve: one-click dark-theme patch for V0 onboarding
+// ---------------------------------------------------------------------------
+
+/// Light-to-dark theme patch applied to the peripheral's index.html.
+const PATCH_OLD: &str = "background: #ffffff;\n        color: #0d0d0d;";
+const PATCH_NEW: &str = "background: #0d1117;\n        color: #c9d1d9;";
+
+async fn api_quick_evolve(State(state): State<Arc<AppState>>) -> axum::response::Response {
+    // 1. Check we're on V0 — only allowed as first-run experience.
+    let status_payload = match serialize_payload(&messages::AdminStatusRequest {}) {
+        Ok(p) => p,
+        Err(r) => return r,
+    };
+    let version = {
+        let mut ipc = state.ipc.lock().await;
+        match ipc.request(msg_types::ADMIN_STATUS_REQUEST, status_payload).await {
+            Ok(resp) => resp.payload.get("current_version")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string(),
+            Err(e) => return (StatusCode::SERVICE_UNAVAILABLE, format!("IPC error: {}", e)).into_response(),
+        }
+    };
+
+    if version != "V0" {
+        return (
+            StatusCode::CONFLICT,
+            axum::Json(serde_json::json!({
+                "success": false,
+                "error": "Quick evolution is only available on V0 (fresh install)"
+            })),
+        ).into_response();
+    }
+
+    // 2. Read the peripheral's index.html from workspace.
+    let index_path = state.workspace_root
+        .join("crates")
+        .join("peripheral")
+        .join("src")
+        .join("static")
+        .join("index.html");
+
+    let content = match std::fs::read_to_string(&index_path) {
+        Ok(c) => c,
+        Err(e) => return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            axum::Json(serde_json::json!({
+                "success": false,
+                "error": format!("Failed to read {}: {}", index_path.display(), e)
+            })),
+        ).into_response(),
+    };
+
+    // 3. Apply the patch.
+    if !content.contains(PATCH_OLD) {
+        return (
+            StatusCode::CONFLICT,
+            axum::Json(serde_json::json!({
+                "success": false,
+                "error": "Patch target not found — file may have already been modified"
+            })),
+        ).into_response();
+    }
+
+    let patched = content.replacen(PATCH_OLD, PATCH_NEW, 1);
+
+    if let Err(e) = std::fs::write(&index_path, &patched) {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            axum::Json(serde_json::json!({
+                "success": false,
+                "error": format!("Failed to write {}: {}", index_path.display(), e)
+            })),
+        ).into_response();
+    }
+
+    tracing::info!("Quick-evolve patch applied to {}", index_path.display());
+
+    // 4. Submit the update to Boot.
+    let submit = messages::SubmitUpdate {
+        source_path: state.workspace_root.to_string_lossy().to_string(),
+    };
+    let payload = match serde_json::to_value(&submit) {
+        Ok(p) => p,
+        Err(e) => return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Serialization error: {}", e),
+        ).into_response(),
+    };
+
+    {
+        let mut ipc = state.ipc.lock().await;
+        if let Err(e) = ipc.send_fire_and_forget(msg_types::SUBMIT_UPDATE, payload).await {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                axum::Json(serde_json::json!({
+                    "success": false,
+                    "error": format!("Failed to submit update: {}", e)
+                })),
+            ).into_response();
+        }
+    }
+
+    axum::Json(serde_json::json!({
+        "success": true,
+        "message": "Dark theme patch applied and submitted for compilation"
+    })).into_response()
 }

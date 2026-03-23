@@ -95,4 +95,22 @@ impl AdminWebIpc {
         self.request(msg_types::LEASE_RENEW, payload).await?;
         Ok(())
     }
+
+    /// Send a message without waiting for a response.
+    pub async fn send_fire_and_forget(
+        &mut self,
+        msg_type: &str,
+        payload: serde_json::Value,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let envelope = Envelope {
+            from: self.identity.clone(),
+            to: "boot".to_string(),
+            msg_type: msg_type.to_string(),
+            id: next_id(&self.identity),
+            payload,
+            fds: Vec::new(),
+        };
+        wire::write_envelope(&mut self.writer, &envelope).await?;
+        Ok(())
+    }
 }
