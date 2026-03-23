@@ -1,25 +1,72 @@
 #!/usr/bin/env bash
 # Reloopy one-click start script
-# Usage: DEEPSEEK_API_KEY=your_key ./start.sh
+# Usage: DEEPSEEK_API_KEY=your_key ./start.sh [--force] [--dev]
 #
 # Options:
 #   --force    Overwrite existing peripheral workspace without prompting
+#   --dev      Print all service logs to the terminal (coloured, prefixed by service name)
 set -euo pipefail
 
 # ── colours ──────────────────────────────────────────────────────────────────
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
 CYAN='\033[0;36m'; BOLD='\033[1m'; RESET='\033[0m'
+MAGENTA='\033[0;35m'; BLUE='\033[0;34m'
 
 info()  { echo -e "${CYAN}[reloopy]${RESET} $*"; }
 ok()    { echo -e "${GREEN}[reloopy]${RESET} $*"; }
 warn()  { echo -e "${YELLOW}[reloopy]${RESET} $*"; }
 die()   { echo -e "${RED}[reloopy] ERROR:${RESET} $*" >&2; exit 1; }
 
+# ── dev mode helpers ──────────────────────────────────────────────────────────
+# prefix_log: reads stdin and prints each line with a fixed-width coloured label.
+prefix_log() {
+    local label="$1" color="$2"
+    while IFS= read -r line; do
+        printf "${color}[%-12s]${RESET} %s\n" "$label" "$line"
+    done
+}
+
+# _launch_bg: start a service in the background and return its PID.
+#
+# In normal mode  → stdout/stderr redirected to the log file only.
+# In dev mode     → stdout/stderr is piped through prefix_log (terminal)
+#                   AND appended to the log file via tee.
+#
+# Usage: PID=$( _launch_bg <log-name> <label> <color> <cmd> [args…] )
+_launch_bg() {
+    local name="$1" label="$2" color="$3"
+    shift 3
+    local log="${LOG_DIR}/${name}.log"
+
+    if [[ "$DEV_MODE" -eq 1 ]]; then
+        # Write BASHPID to a temp file before exec so we can report the real PID.
+        local pid_file
+        pid_file=$(mktemp)
+        ( echo "$BASHPID" > "$pid_file"; exec "$@" ) \
+            2>&1 | prefix_log "$label" "$color" | tee -a "$log" &
+        # Wait up to 1 s for the subshell to write its PID.
+        local retries=0
+        while [[ ! -s "$pid_file" ]] && (( retries < 20 )); do
+            sleep 0.05
+            (( retries++ )) || true
+        done
+        local pid
+        pid=$(cat "$pid_file")
+        rm -f "$pid_file"
+        echo "$pid"
+    else
+        "$@" > "$log" 2>&1 &
+        echo $!
+    fi
+}
+
 # ── parse flags ──────────────────────────────────────────────────────────────
 FORCE_OVERWRITE=0
+DEV_MODE=0
 for arg in "$@"; do
     case "$arg" in
         --force) FORCE_OVERWRITE=1 ;;
+        --dev)   DEV_MODE=1 ;;
     esac
 done
 
@@ -128,7 +175,11 @@ mkdir -p "${LOG_DIR}"
 
 # ── build ─────────────────────────────────────────────────────────────────────
 info "Building workspace (release)…"
-cargo build --release 2>&1 | tail -5
+if [[ "$DEV_MODE" -eq 1 ]]; then
+    cargo build --release
+else
+    cargo build --release 2>&1 | tail -5
+fi
 ok "Build complete."
 
 # ── stop previous instances ───────────────────────────────────────────────────
@@ -187,33 +238,30 @@ check_alive() {
 
 # ── reloopy-boot ────────────────────────────────────────────────────────────────
 info "Starting reloopy-boot…"
-RUST_LOG="${RUST_LOG:-info}" \
-    "${SCRIPT_DIR}/target/release/reloopy-boot" \
-    > "${LOG_DIR}/boot.log" 2>&1 &
-PIDS+=($!)
-BOOT_PID=$!
+BOOT_PID=$( RUST_LOG="${RUST_LOG:-info}" \
+    _launch_bg "boot" "boot" "$CYAN" \
+    "${SCRIPT_DIR}/target/release/reloopy-boot" )
+PIDS+=($BOOT_PID)
 sleep 1
 check_alive "reloopy-boot" "$BOOT_PID" "${LOG_DIR}/boot.log"
 ok "reloopy-boot running  (pid ${BOOT_PID}, log: .reloopy/logs/boot.log)"
 
 # ── reloopy-compiler ────────────────────────────────────────────────────────────
 info "Starting reloopy-compiler…"
-RUST_LOG="${RUST_LOG:-info}" \
-    "${SCRIPT_DIR}/target/release/reloopy-compiler" \
-    > "${LOG_DIR}/compiler.log" 2>&1 &
-PIDS+=($!)
-COMPILER_PID=$!
+COMPILER_PID=$( RUST_LOG="${RUST_LOG:-info}" \
+    _launch_bg "compiler" "compiler" "$GREEN" \
+    "${SCRIPT_DIR}/target/release/reloopy-compiler" )
+PIDS+=($COMPILER_PID)
 sleep 1
 check_alive "reloopy-compiler" "$COMPILER_PID" "${LOG_DIR}/compiler.log"
 ok "reloopy-compiler running  (pid ${COMPILER_PID}, log: .reloopy/logs/compiler.log)"
 
 # ── reloopy-admin-web ──────────────────────────────────────────────────────────
 info "Starting reloopy-admin-web (dashboard)…"
-RUST_LOG="${RUST_LOG:-info}" \
-    "${SCRIPT_DIR}/target/release/reloopy-admin-web" \
-    > "${LOG_DIR}/admin-web.log" 2>&1 &
-PIDS+=($!)
-ADMIN_WEB_PID=$!
+ADMIN_WEB_PID=$( RUST_LOG="${RUST_LOG:-info}" \
+    _launch_bg "admin-web" "admin-web" "$MAGENTA" \
+    "${SCRIPT_DIR}/target/release/reloopy-admin-web" )
+PIDS+=($ADMIN_WEB_PID)
 sleep 1
 check_alive "reloopy-admin-web" "$ADMIN_WEB_PID" "${LOG_DIR}/admin-web.log"
 ADMIN_WEB_PORT="${RELOOPY_ADMIN_WEB_PORT:-7801}"
@@ -222,12 +270,11 @@ ok "reloopy-admin-web running  (pid ${ADMIN_WEB_PID}, log: .reloopy/logs/admin-w
 # ── reloopy-peripheral ─────────────────────────────────────────────────────────
 if [[ "${SKIP_PERIPHERAL}" -eq 0 ]]; then
     info "Starting reloopy-peripheral…"
-    RUST_LOG="${RUST_LOG:-info}" \
-    DEEPSEEK_API_KEY="${DEEPSEEK_API_KEY}" \
-        "${SCRIPT_DIR}/target/release/reloopy-peripheral" \
-        > "${LOG_DIR}/peripheral.log" 2>&1 &
-    PIDS+=($!)
-    PERIPHERAL_PID=$!
+    PERIPHERAL_PID=$( RUST_LOG="${RUST_LOG:-info}" \
+        DEEPSEEK_API_KEY="${DEEPSEEK_API_KEY}" \
+        _launch_bg "peripheral" "peripheral" "$BLUE" \
+        "${SCRIPT_DIR}/target/release/reloopy-peripheral" )
+    PIDS+=($PERIPHERAL_PID)
     sleep 2
     check_alive "reloopy-peripheral" "$PERIPHERAL_PID" "${LOG_DIR}/peripheral.log"
     ok "reloopy-peripheral running  (pid ${PERIPHERAL_PID}, log: .reloopy/logs/peripheral.log)"
