@@ -44,18 +44,19 @@ _launch_bg() {
         # exec then replaces that process with the service binary, keeping the PID.
         local pid_file
         pid_file=$(mktemp)
+        # Redirect tee's stdout to /dev/tty so it goes to the terminal directly,
+        # NOT into the $(...) command-substitution capture. Without this, the
+        # capture pipe stays open as long as the service runs, blocking forever.
         bash -c 'echo $$ > "$1"; exec "${@:2}"' _ "$pid_file" "$@" \
-            2>&1 | prefix_log "$label" "$color" | tee -a "$log" &
+            2>&1 | prefix_log "$label" "$color" | tee -a "$log" > /dev/tty &
         # Wait up to 1 s for the child to write its PID.
         local retries=0
         while [[ ! -s "$pid_file" ]] && (( retries < 20 )); do
             sleep 0.05
             (( retries++ )) || true
         done
-        local pid
-        pid=$(cat "$pid_file")
+        cat "$pid_file"
         rm -f "$pid_file"
-        echo "$pid"
     else
         "$@" > "$log" 2>&1 &
         echo $!
