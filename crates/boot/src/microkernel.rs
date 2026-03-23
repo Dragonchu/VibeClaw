@@ -440,7 +440,8 @@ impl Microkernel {
                     payload: to_json_value(&shutdown),
                     fds: Vec::new(),
                 };
-                router.broadcast(shutdown_envelope).await;
+                // Send only to old peripheral, not to all peers (compiler etc. should keep running)
+                let _ = router.send_to("peripheral", shutdown_envelope).await;
                 self.kill_peripheral_process().await;
                 self.peripheral_child = child;
                 self.send_audit(
