@@ -45,6 +45,9 @@ async fn main() {
         );
         std::process::exit(1);
     }
+    // Write our PID so stop_existing() can force-kill if graceful shutdown fails.
+    use std::io::Write;
+    let _ = writeln!(&lock_file, "{}", std::process::id());
     // Keep lock_file alive for the entire process lifetime.
 
     if let Err(e) = microkernel::RuntimeSupervisor::run(config).await {

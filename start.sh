@@ -215,17 +215,32 @@ stop_existing() {
                 sleep 1
                 waited=$((waited + 1))
             done
-            if [[ -S "$RELOOPY_SOCK" ]]; then
-                warn "Socket still present after ${waited}s — removing stale socket"
-                rm -f "$RELOOPY_SOCK"
-            else
+            if [[ ! -S "$RELOOPY_SOCK" ]]; then
                 ok "Old system exited cleanly."
+                return
             fi
+            warn "Socket still present after ${waited}s"
         else
-            warn "reloopy-admin shutdown failed or timed out. Cleaning up…"
-            rm -f "$RELOOPY_SOCK"
+            warn "reloopy-admin shutdown failed or timed out."
         fi
     fi
+
+    # Graceful shutdown failed — force-kill Boot via PID from lock file.
+    if [[ -f "$RELOOPY_LOCK" ]]; then
+        local old_pid
+        old_pid=$(head -1 "$RELOOPY_LOCK" 2>/dev/null | tr -d '[:space:]')
+        if [[ -n "$old_pid" ]] && kill -0 "$old_pid" 2>/dev/null; then
+            warn "Force-killing old Boot process (PID $old_pid)…"
+            kill "$old_pid" 2>/dev/null || true
+            sleep 1
+            # SIGKILL if still alive
+            if kill -0 "$old_pid" 2>/dev/null; then
+                kill -9 "$old_pid" 2>/dev/null || true
+                sleep 1
+            fi
+        fi
+    fi
+    rm -f "$RELOOPY_SOCK"
 }
 stop_existing
 
