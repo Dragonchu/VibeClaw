@@ -45,10 +45,12 @@ pub struct VersionManager {
     base_dir: PathBuf,
     /// `~/.reloopy/peripheral/source` — the single git repo
     source_dir: PathBuf,
-    /// `~/.reloopy/peripheral/binary` — fixed binary path
+    /// `~/.reloopy/peripheral/binary` — fixed binary path (latest compiled)
     binary_path: PathBuf,
     /// `~/.reloopy/peripheral/binary.rollback` — previous good binary
     rollback_binary_path: PathBuf,
+    /// `~/.reloopy/peripheral/binaries/` — per-version binary archive
+    binaries_dir: PathBuf,
     consecutive_failures: u32,
     locked: bool,
     /// Version currently being attempted (e.g. "V2").  Set on first
@@ -93,11 +95,13 @@ impl VersionManager {
         let source_dir = peripheral.join("source");
         let binary_path = peripheral.join("binary");
         let rollback_binary_path = peripheral.join("binary.rollback");
+        let binaries_dir = peripheral.join("binaries");
         Self {
             base_dir: peripheral,
             source_dir,
             binary_path,
             rollback_binary_path,
+            binaries_dir,
             consecutive_failures: 0,
             locked: false,
             pending_version: None,
@@ -141,6 +145,43 @@ impl VersionManager {
         } else {
             (PathBuf::from(SEED_BINARY), false)
         }
+    }
+
+    /// Resolve the binary for a specific version.
+    /// Checks the per-version archive first, then falls back to the seed binary.
+    pub fn resolve_binary_for_version(&self, version: &str) -> (PathBuf, bool) {
+        let archived = self.binaries_dir.join(version).join("reloopy-peripheral");
+        if archived.exists() {
+            return (archived, true);
+        }
+        // No archive for this version — fall back to seed binary.
+        (PathBuf::from(SEED_BINARY), false)
+    }
+
+    /// Archive the current active binary for the given version.
+    /// Creates `binaries/<version>/reloopy-peripheral` so that
+    /// `resolve_binary_for_version` can restore it later.
+    pub fn archive_binary(&self, version: &str) -> Result<(), String> {
+        if !self.binary_path.exists() {
+            return Err("No active binary to archive".to_string());
+        }
+        let version_dir = self.binaries_dir.join(version);
+        fs::create_dir_all(&version_dir)
+            .map_err(|e| format!("Failed to create archive dir: {}", e))?;
+        let target = version_dir.join("reloopy-peripheral");
+        fs::copy(&self.binary_path, &target)
+            .map_err(|e| format!("Failed to archive binary: {}", e))?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = fs::set_permissions(&target, fs::Permissions::from_mode(0o755));
+        }
+        tracing::info!(
+            version = %version,
+            path = %target.display(),
+            "Archived binary for version"
+        );
+        Ok(())
     }
 
     /// Validate version state on startup.  Ensures the git repo is healthy,
@@ -2237,5 +2278,53 @@ mod tests {
         let err = mgr.reuse_pending_or_allocate();
         assert!(err.is_err());
         assert!(err.unwrap_err().contains("locked"));
+    }
+
+    #[test]
+    fn archive_and_resolve_binary_for_version() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut mgr = VersionManager::new(tmp.path());
+        mgr.ensure_dirs().unwrap();
+
+        // No archive yet — should fall back to seed binary.
+        let (path, is_archived) = mgr.resolve_binary_for_version("V1");
+        assert!(!is_archived);
+        assert_eq!(path, PathBuf::from(SEED_BINARY));
+
+        // Simulate a compiled binary and archive it.
+        fs::write(&mgr.binary_path, b"v1-binary-content").unwrap();
+        mgr.archive_binary("V1").unwrap();
+
+        // Now resolve should find the archive.
+        let (path, is_archived) = mgr.resolve_binary_for_version("V1");
+        assert!(is_archived);
+        assert!(path.exists());
+        assert_eq!(fs::read_to_string(&path).unwrap(), "v1-binary-content");
+
+        // Archive V2 with different content.
+        fs::write(&mgr.binary_path, b"v2-binary-content").unwrap();
+        mgr.archive_binary("V2").unwrap();
+
+        // Both archives should coexist.
+        let (v1_path, _) = mgr.resolve_binary_for_version("V1");
+        let (v2_path, _) = mgr.resolve_binary_for_version("V2");
+        assert_eq!(fs::read_to_string(v1_path).unwrap(), "v1-binary-content");
+        assert_eq!(fs::read_to_string(v2_path).unwrap(), "v2-binary-content");
+
+        // Unknown version should fall back to seed.
+        let (path, is_archived) = mgr.resolve_binary_for_version("V99");
+        assert!(!is_archived);
+        assert_eq!(path, PathBuf::from(SEED_BINARY));
+    }
+
+    #[test]
+    fn archive_binary_without_active_binary_fails() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mgr = VersionManager::new(tmp.path());
+        mgr.ensure_dirs().unwrap();
+
+        let result = mgr.archive_binary("V1");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("No active binary"));
     }
 }

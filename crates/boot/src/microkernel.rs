@@ -840,6 +840,11 @@ impl Microkernel {
                         std::fs::Permissions::from_mode(0o755),
                     ).warn_err();
                 }
+
+                // Archive a per-version copy so rollback can restore it.
+                if let Err(e) = self.version_manager.archive_binary(&result.version) {
+                    tracing::error!(version = %result.version, "Failed to archive binary: {}", e);
+                }
             }
         }
 
@@ -1534,10 +1539,21 @@ impl Microkernel {
         self.lease_manager.remove("peripheral");
         self.peripheral_http_port = None;
 
-        let binary = self.version_manager.binary_path().to_path_buf();
+        let (binary, is_archived) = self.version_manager.resolve_binary_for_version(version_label);
         if !binary.exists() {
-            return Err(format!("Peripheral binary not found: {}", binary.display()).into());
+            return Err(format!(
+                "Peripheral binary not found for version {}: {}",
+                version_label,
+                binary.display()
+            )
+            .into());
         }
+        tracing::info!(
+            version = %version_label,
+            binary = %binary.display(),
+            archived = is_archived,
+            "Resolved binary for peripheral replacement"
+        );
 
         self.spawn_peripheral(&binary, version_label).await
     }
