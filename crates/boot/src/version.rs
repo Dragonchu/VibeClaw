@@ -161,6 +161,7 @@ impl VersionManager {
     /// Archive the current active binary for the given version.
     /// Creates `binaries/<version>/reloopy-peripheral` so that
     /// `resolve_binary_for_version` can restore it later.
+    /// Automatically prunes old archives beyond `MAX_ARCHIVED_BINARIES`.
     pub fn archive_binary(&self, version: &str) -> Result<(), String> {
         if !self.binary_path.exists() {
             return Err("No active binary to archive".to_string());
@@ -181,7 +182,53 @@ impl VersionManager {
             path = %target.display(),
             "Archived binary for version"
         );
+
+        self.prune_old_archives(version);
         Ok(())
+    }
+
+    /// Maximum number of per-version binary archives to retain.
+    const MAX_ARCHIVED_BINARIES: usize = 10;
+
+    /// Remove the oldest binary archives beyond [`Self::MAX_ARCHIVED_BINARIES`].
+    /// Versions are sorted numerically (V1 < V2 < V10); the newest N are kept.
+    /// `keep_version` is always retained regardless of age.
+    fn prune_old_archives(&self, keep_version: &str) {
+        let entries = match fs::read_dir(&self.binaries_dir) {
+            Ok(e) => e,
+            Err(_) => return,
+        };
+
+        // Collect (numeric_key, directory_name) for sorting.
+        let mut versions: Vec<(u32, String)> = entries
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
+            .filter_map(|e| {
+                let name = e.file_name().to_string_lossy().to_string();
+                let num = name.strip_prefix('V').and_then(|s| s.parse::<u32>().ok())?;
+                Some((num, name))
+            })
+            .collect();
+
+        if versions.len() <= Self::MAX_ARCHIVED_BINARIES {
+            return;
+        }
+
+        // Sort ascending by version number; oldest first.
+        versions.sort_by_key(|(num, _)| *num);
+
+        let to_remove = versions.len() - Self::MAX_ARCHIVED_BINARIES;
+        for (_, name) in versions.iter().take(to_remove) {
+            if name == keep_version {
+                continue;
+            }
+            let dir = self.binaries_dir.join(name);
+            if let Err(e) = fs::remove_dir_all(&dir) {
+                tracing::warn!(version = %name, "Failed to prune old binary archive: {}", e);
+            } else {
+                tracing::info!(version = %name, "Pruned old binary archive");
+            }
+        }
     }
 
     /// Validate version state on startup.  Ensures the git repo is healthy,
@@ -2326,5 +2373,33 @@ mod tests {
         let result = mgr.archive_binary("V1");
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("No active binary"));
+    }
+
+    #[test]
+    fn prune_old_archives_keeps_newest_n() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mgr = VersionManager::new(tmp.path());
+        mgr.ensure_dirs().unwrap();
+
+        // Create 12 archived versions (V1..V12).
+        fs::write(&mgr.binary_path, b"bin").unwrap();
+        for i in 1..=12 {
+            let ver = format!("V{}", i);
+            mgr.archive_binary(&ver).unwrap();
+        }
+
+        // After archiving V12, only the newest MAX_ARCHIVED_BINARIES should remain.
+        let remaining: Vec<String> = fs::read_dir(&mgr.binaries_dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().to_string())
+            .collect();
+
+        assert_eq!(remaining.len(), VersionManager::MAX_ARCHIVED_BINARIES);
+        // V1 and V2 should be pruned; V3..V12 should remain.
+        assert!(!remaining.contains(&"V1".to_string()));
+        assert!(!remaining.contains(&"V2".to_string()));
+        assert!(remaining.contains(&"V12".to_string()));
+        assert!(remaining.contains(&"V3".to_string()));
     }
 }
