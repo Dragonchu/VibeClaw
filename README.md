@@ -28,20 +28,30 @@ This is not a diagram of a future feature — it is the implemented loop today. 
 - **Smaller attack surface**: fewer built-in features means less code you are forced to trust.
 - **Your trade-offs, not ours**: secure or aggressive, conservative or experimental — you decide the policy, the constitution, and the upgrade gate.
 
-## Install & start (one command)
+## Install & start
 
 ```bash
 git clone https://github.com/Dragonchu/reloopy.git
 cd reloopy
-DEEPSEEK_API_KEY=your_key_here ./start.sh
+DEEPSEEK_API_KEY=your_key_here ./setup.sh
 ```
 
-`start.sh` builds the workspace in release mode, then launches **Boot → Compiler → Peripheral** in the correct order. Open <http://127.0.0.1:7700> when you see the ➜ prompt.
+`setup.sh` builds all crates in release mode and installs `reloopy-*` binaries to `~/.cargo/bin/` (or a custom `--prefix`).
 
-> No API key yet? Run `./start.sh` without one — Boot and the compiler still start so you can explore the architecture.
+Then start the system:
+
+```bash
+DEEPSEEK_API_KEY=your_key_here reloopy start
+```
+
+Boot auto-spawns **Compiler**, **Admin-Web**, and **Peripheral** in the correct order. Open <http://127.0.0.1:7700> when you see the startup log.
+
+Stop with `reloopy stop` or `Ctrl-C`.
+
+> No API key yet? Run `reloopy start` without one — Boot and the compiler still start so you can explore the architecture.
 
 <details>
-<summary>Manual step-by-step startup</summary>
+<summary>Development workflow (without installing)</summary>
 
 ### 1) Build
 
@@ -49,22 +59,10 @@ DEEPSEEK_API_KEY=your_key_here ./start.sh
 cargo build
 ```
 
-### 2) Start the microkernel
+### 2) Start the microkernel (spawns all services automatically)
 
 ```bash
-RUST_LOG=info cargo run --bin reloopy-boot
-```
-
-### 3) Start the compiler service in another terminal
-
-```bash
-cargo run --bin reloopy-compiler
-```
-
-### 4) Start the self-evolving peripheral agent
-
-```bash
-RELOOPY_WORKSPACE=$PWD DEEPSEEK_API_KEY=your_key_here cargo run --bin reloopy-peripheral
+RUST_LOG=info DEEPSEEK_API_KEY=your_key_here cargo run --bin reloopy-boot
 ```
 
 Then open <http://127.0.0.1:7700>.
@@ -90,7 +88,7 @@ curl -N http://127.0.0.1:7700/api/chat \
 Want a quick smoke test before setting an API key?
 
 ```bash
-cargo run --bin reloopy-admin -- status
+reloopy-admin status
 ```
 
 ## How the self-evolution loop works
@@ -178,10 +176,10 @@ curl -N http://127.0.0.1:7700/api/chat \
 ### Admin CLI
 
 ```bash
-cargo run --bin reloopy-admin -- status
-cargo run --bin reloopy-admin -- peers
-cargo run --bin reloopy-admin -- versions
-cargo run --bin reloopy-admin -- runlevel
+reloopy-admin status
+reloopy-admin peers
+reloopy-admin versions
+reloopy-admin runlevel
 ```
 
 ### Repository layout
@@ -193,6 +191,7 @@ crates/services/compiler/  compile service for candidate builds
 crates/services/judge/     scoring / test service scaffold
 crates/services/audit/     audit service scaffold
 crates/peripheral/         self-evolving agent, web UI, source tools
+crates/cli/               unified CLI entry point (`reloopy` command)
 crates/admin/              local administration CLI
 constitution/              invariants, benchmarks, amendment log
 protocol/                  protocol definitions
@@ -212,7 +211,7 @@ Contributions are welcome, especially around:
 A good way to start:
 
 1. read [`plan.md`](./plan.md)
-2. build the workspace with `cargo build`
+2. run `./setup.sh` to build and install
 3. inspect the Boot and peripheral crates
 4. open a focused issue or PR
 

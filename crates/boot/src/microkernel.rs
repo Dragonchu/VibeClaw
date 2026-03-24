@@ -63,6 +63,7 @@ impl CapabilityRegistry {
             "admin" => Some(&["admin"]),
             "admin-web" => Some(&["admin"]),
             "admin-web-events" => Some(&["admin"]),
+            "cli" => Some(&["admin"]),
             _ => None,
         }
     }
@@ -115,6 +116,39 @@ struct ProbationState {
 
 const HOT_SWAP_HANDSHAKE_TIMEOUT_SECS: u64 = 60;
 
+/// Resolve a sibling binary by name.  Checks the directory containing the
+/// current executable first (works after `cargo install` or `setup.sh`), then
+/// falls back to PATH lookup.
+fn resolve_sibling_binary(name: &str) -> PathBuf {
+    if let Ok(exe) = std::env::current_exe() {
+        if let Ok(canonical) = exe.canonicalize() {
+            if let Some(dir) = canonical.parent() {
+                let sibling = dir.join(name);
+                if sibling.exists() {
+                    return sibling;
+                }
+            }
+        }
+    }
+    // Fallback: rely on PATH
+    PathBuf::from(name)
+}
+
+/// Kill a child process stored in an `Option<Child>`, logging with `name`.
+async fn kill_child_process(child: &mut Option<tokio::process::Child>, name: &str) {
+    if let Some(c) = child {
+        let pid = c.id();
+        tracing::info!(pid = ?pid, service = %name, "Killing service process");
+        if let Err(e) = c.kill().await {
+            tracing::warn!(pid = ?pid, service = %name, "Failed to kill service: {}", e);
+        } else {
+            let _ = c.wait().await;
+            tracing::info!(pid = ?pid, service = %name, "Service process killed");
+        }
+    }
+    *child = None;
+}
+
 enum HotSwapState {
     Idle,
     WaitingForNewHandshake {
@@ -140,6 +174,8 @@ pub struct Microkernel {
     hot_swap: HotSwapState,
     shutdown_requested: bool,
     peripheral_child: Option<tokio::process::Child>,
+    compiler_child: Option<tokio::process::Child>,
+    admin_web_child: Option<tokio::process::Child>,
     /// HTTP port reported by the currently connected peripheral.
     peripheral_http_port: Option<u16>,
     /// Peers that have subscribed to event broadcasts (identity → subscribed categories).
@@ -177,6 +213,8 @@ impl Microkernel {
             hot_swap: HotSwapState::Idle,
             shutdown_requested: false,
             peripheral_child: None,
+            compiler_child: None,
+            admin_web_child: None,
             peripheral_http_port: None,
             event_subscribers: std::collections::HashMap::new(),
         }
@@ -204,6 +242,9 @@ impl Microkernel {
             current_version = ?self.version_manager.current_version(),
             "Boot microkernel ready"
         );
+
+        // Auto-spawn managed services (compiler, admin-web) and peripheral.
+        self.spawn_managed_services().await;
 
         // Auto-spawn peripheral using the best available binary.
         let (binary, is_evolved) = self.version_manager.resolve_binary();
@@ -1414,6 +1455,61 @@ impl Microkernel {
         Ok(child)
     }
 
+    /// Spawn a managed service (compiler, admin-web) by name.
+    fn spawn_service(
+        &self,
+        binary_path: &PathBuf,
+        name: &str,
+    ) -> Result<tokio::process::Child, Box<dyn std::error::Error>> {
+        let child = tokio::process::Command::new(binary_path)
+            .env(
+                "RELOOPY_SOCKET",
+                self.config.sock_path.to_string_lossy().to_string(),
+            )
+            .spawn()?;
+
+        tracing::info!(
+            service = %name,
+            pid = child.id().unwrap_or(0),
+            binary = %binary_path.display(),
+            "Spawned service process"
+        );
+
+        Ok(child)
+    }
+
+    /// Auto-spawn compiler and admin-web services.
+    async fn spawn_managed_services(&mut self) {
+        let services: &[(&str, &str)] = &[
+            ("compiler", "reloopy-compiler"),
+            ("admin-web", "reloopy-admin-web"),
+        ];
+
+        for &(name, binary_name) in services {
+            let binary = resolve_sibling_binary(binary_name);
+            if !binary.exists() && binary.to_str() == Some(binary_name) {
+                // PATH-only fallback — binary may still be resolvable at exec time,
+                // but we can't verify existence. Skip with a warning.
+                tracing::warn!(
+                    service = %name,
+                    binary = %binary_name,
+                    "Service binary not found on PATH or next to boot — skipping"
+                );
+                continue;
+            }
+            match self.spawn_service(&binary, name) {
+                Ok(child) => match name {
+                    "compiler" => self.compiler_child = Some(child),
+                    "admin-web" => self.admin_web_child = Some(child),
+                    _ => {}
+                },
+                Err(e) => {
+                    tracing::error!(service = %name, "Failed to spawn service: {}", e);
+                }
+            }
+        }
+    }
+
     async fn kill_peripheral_process(&mut self) {
         if let Some(ref mut child) = self.peripheral_child {
             let pid = child.id();
@@ -1655,6 +1751,8 @@ impl Microkernel {
         };
 
         router.broadcast(envelope).await;
+        kill_child_process(&mut self.compiler_child, "compiler").await;
+        kill_child_process(&mut self.admin_web_child, "admin-web").await;
         self.kill_peripheral_process().await;
         self.shutdown_requested = true;
     }

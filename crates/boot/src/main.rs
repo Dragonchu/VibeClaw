@@ -24,7 +24,7 @@ async fn main() {
 
     let config = microkernel::BootConfig::default();
 
-    // Acquire an exclusive lock so start.sh (and other tooling) can reliably
+    // Acquire an exclusive lock so tooling (e.g. `reloopy stop`) can reliably
     // detect whether Boot is still alive.  The lock is automatically released
     // when the process exits — even on panic or SIGKILL.
     let lock_path = config.base_dir.join("boot.lock");
