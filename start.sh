@@ -89,7 +89,7 @@ fi
 
 if [[ -z "${DEEPSEEK_API_KEY:-}" ]]; then
     warn "DEEPSEEK_API_KEY is not set."
-    warn "Boot, compiler, and admin will start, but the peripheral agent will be skipped."
+    warn "Boot will start but will not auto-spawn the peripheral agent."
     warn "Re-run with:  DEEPSEEK_API_KEY=your_key ./start.sh"
     SKIP_PERIPHERAL=1
 else
@@ -272,9 +272,13 @@ check_alive() {
 }
 
 # ── reloopy-boot ────────────────────────────────────────────────────────────────
+# Boot auto-spawns the peripheral process, choosing the latest evolved binary
+# (if available) or falling back to the seed binary.  DEEPSEEK_API_KEY must be
+# in Boot's environment so it can be inherited by the spawned peripheral.
 info "Starting reloopy-boot…"
 _launch_bg "boot" "boot" "$CYAN" \
     env RUST_LOG="${RUST_LOG:-info}" \
+        DEEPSEEK_API_KEY="${DEEPSEEK_API_KEY:-}" \
     "${SCRIPT_DIR}/target/release/reloopy-boot"
 BOOT_PID=$LAST_PID
 PIDS+=($BOOT_PID)
@@ -306,20 +310,17 @@ ADMIN_WEB_PORT="${RELOOPY_ADMIN_WEB_PORT:-7801}"
 ok "reloopy-admin-web running  (pid ${ADMIN_WEB_PID}, log: .reloopy/logs/admin-web.log)"
 
 # ── reloopy-peripheral ─────────────────────────────────────────────────────────
+# Peripheral is auto-spawned by Boot (using the evolved binary if available,
+# otherwise the seed binary).  We just wait briefly for it to appear in
+# Boot's logs and extract the HTTP port for display.
 if [[ "${SKIP_PERIPHERAL}" -eq 0 ]]; then
-    info "Starting reloopy-peripheral…"
-    _launch_bg "peripheral" "peripheral" "$BLUE" \
-        env RUST_LOG="${RUST_LOG:-info}" \
-            DEEPSEEK_API_KEY="${DEEPSEEK_API_KEY}" \
-        "${SCRIPT_DIR}/target/release/reloopy-peripheral"
-    PERIPHERAL_PID=$LAST_PID
-    PIDS+=($PERIPHERAL_PID)
-    sleep 2
-    check_alive "reloopy-peripheral" "$PERIPHERAL_PID" "${LOG_DIR}/peripheral.log"
-    ok "reloopy-peripheral running  (pid ${PERIPHERAL_PID}, log: .reloopy/logs/peripheral.log)"
-    # Extract the actual bound port from the peripheral log (may differ from
-    # the configured port when the default was already in use).
-    ACTUAL_PORT=$(sed -n 's/.*HTTP server listening on http:\/\/[^:]*:\([0-9]*\).*/\1/p' "${LOG_DIR}/peripheral.log" | tail -1)
+    info "Peripheral will be auto-spawned by Boot…"
+    # Give Boot time to spawn the peripheral and for it to log its HTTP port.
+    sleep 3
+    ACTUAL_PORT=""
+    if [[ -f "${LOG_DIR}/boot.log" ]]; then
+        ACTUAL_PORT=$(sed -n 's/.*Peripheral HTTP port registered.*http_port=\([0-9]*\).*/\1/p' "${LOG_DIR}/boot.log" | tail -1)
+    fi
     ACTUAL_PORT="${ACTUAL_PORT:-${RELOOPY_HTTP_PORT:-7700}}"
     echo ""
     echo -e "${BOLD}  ➜  Agent UI  http://127.0.0.1:${ACTUAL_PORT}${RESET}"

@@ -192,6 +192,11 @@ impl Microkernel {
             .init()
             .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
 
+        // Validate version state and restore any persisted in-memory state.
+        if let Err(e) = self.version_manager.validate_on_startup() {
+            tracing::error!("Version validation failed (non-fatal): {}", e);
+        }
+
         tracing::info!(
             base_dir = %self.config.base_dir.display(),
             sock = %self.config.sock_path.display(),
@@ -199,6 +204,38 @@ impl Microkernel {
             current_version = ?self.version_manager.current_version(),
             "Boot microkernel ready"
         );
+
+        // Auto-spawn peripheral using the best available binary.
+        let (binary, is_evolved) = self.version_manager.resolve_binary();
+        let version_label = self
+            .version_manager
+            .current_version()
+            .unwrap_or_else(|| "seed".to_string());
+        if binary.exists() {
+            tracing::info!(
+                binary = %binary.display(),
+                version = %version_label,
+                evolved = is_evolved,
+                "Auto-spawning peripheral"
+            );
+            match self.spawn_peripheral(&binary, &version_label).await {
+                Ok(child) => {
+                    self.peripheral_child = Some(child);
+                }
+                Err(e) => {
+                    tracing::error!(
+                        binary = %binary.display(),
+                        "Failed to auto-spawn peripheral: {} — waiting for external connection",
+                        e
+                    );
+                }
+            }
+        } else {
+            tracing::warn!(
+                binary = %binary.display(),
+                "Peripheral binary not found — waiting for external connection"
+            );
+        }
 
         let mut lease_tick = tokio::time::interval(self.config.lease_check_interval);
         let mut probation_tick =

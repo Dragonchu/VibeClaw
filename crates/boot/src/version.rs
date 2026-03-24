@@ -28,6 +28,13 @@ const SEED_SOURCE: &str = env!("RELOOPY_SEED_SOURCE");
 /// Set by `crates/boot/build.rs`.
 const SEED_IPC: &str = env!("RELOOPY_SEED_IPC");
 
+/// Compile-time path to the seed peripheral binary.  Used as fallback
+/// when no evolved binary exists yet.  Set by `crates/boot/build.rs`.
+const SEED_BINARY: &str = env!("RELOOPY_SEED_BINARY");
+
+/// File name for persisted version manager state.
+const VERSION_STATE_FILE: &str = "version_state.json";
+
 /// Root workspace `Cargo.toml`, embedded at compile time.  Used to derive
 /// a standalone workspace manifest for the seed `peripheral/source/` repo.
 const ROOT_WORKSPACE_TOML: &str = include_str!("../../../Cargo.toml");
@@ -67,6 +74,19 @@ pub struct VersionInfo {
     pub binary_path: PathBuf,
 }
 
+/// Subset of VersionManager state that is persisted to disk across restarts.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, Default)]
+struct PersistedState {
+    #[serde(default)]
+    pending_version: Option<String>,
+    #[serde(default)]
+    pending_attempt: u32,
+    #[serde(default)]
+    consecutive_failures: u32,
+    #[serde(default)]
+    locked: bool,
+}
+
 impl VersionManager {
     pub fn new(base_dir: &Path) -> Self {
         let peripheral = base_dir.join("peripheral");
@@ -104,6 +124,137 @@ impl VersionManager {
     /// Return the rollback binary path.
     pub fn rollback_binary_path(&self) -> &Path {
         &self.rollback_binary_path
+    }
+
+    /// Return the compile-time seed binary path (fallback when no evolved
+    /// binary exists).
+    pub fn seed_binary_path(&self) -> &Path {
+        Path::new(SEED_BINARY)
+    }
+
+    /// Determine which binary to use for spawning the peripheral.
+    /// Returns `(path, is_evolved)` — `true` when using the evolved binary,
+    /// `false` when falling back to the seed binary.
+    pub fn resolve_binary(&self) -> (PathBuf, bool) {
+        if self.binary_path.exists() {
+            (self.binary_path.clone(), true)
+        } else {
+            (PathBuf::from(SEED_BINARY), false)
+        }
+    }
+
+    /// Validate version state on startup.  Ensures the git repo is healthy,
+    /// restores persisted in-memory state, and logs any inconsistencies.
+    ///
+    /// Must be called once during `Microkernel::run()` before entering
+    /// the event loop.
+    pub fn validate_on_startup(&mut self) -> Result<(), String> {
+        self.ensure_dirs()
+            .map_err(|e| format!("Failed to create peripheral dirs: {}", e))?;
+
+        // Ensure the git repo is usable (or initialise from seed).
+        self.init_repo_if_needed()?;
+
+        // Restore persisted state from previous run.
+        self.restore_state();
+
+        let version = self.current_version();
+        let binary_exists = self.binary_path.exists();
+
+        match (&version, binary_exists) {
+            (Some(v), true) => {
+                tracing::info!(
+                    version = %v,
+                    binary = %self.binary_path.display(),
+                    "Version state validated — evolved binary available"
+                );
+            }
+            (Some(v), false) => {
+                tracing::warn!(
+                    version = %v,
+                    binary = %self.binary_path.display(),
+                    seed_binary = SEED_BINARY,
+                    "Version branch exists but binary is missing — will use seed binary"
+                );
+            }
+            (None, _) => {
+                tracing::info!(
+                    seed_binary = SEED_BINARY,
+                    "No version history found — will use seed binary"
+                );
+            }
+        }
+
+        if let Some(ref pv) = self.pending_version {
+            tracing::info!(
+                pending_version = %pv,
+                pending_attempt = self.pending_attempt,
+                consecutive_failures = self.consecutive_failures,
+                locked = self.locked,
+                "Restored persisted version state"
+            );
+        }
+
+        Ok(())
+    }
+
+    // -- state persistence ------------------------------------------------
+
+    fn state_file_path(&self) -> PathBuf {
+        self.base_dir.join(VERSION_STATE_FILE)
+    }
+
+    fn persist_state(&self) {
+        let state = PersistedState {
+            pending_version: self.pending_version.clone(),
+            pending_attempt: self.pending_attempt,
+            consecutive_failures: self.consecutive_failures,
+            locked: self.locked,
+        };
+        match serde_json::to_string_pretty(&state) {
+            Ok(json) => {
+                if let Err(e) = fs::write(self.state_file_path(), json) {
+                    tracing::warn!("Failed to persist version state: {}", e);
+                }
+            }
+            Err(e) => {
+                tracing::warn!("Failed to serialise version state: {}", e);
+            }
+        }
+    }
+
+    fn restore_state(&mut self) {
+        let path = self.state_file_path();
+        if !path.exists() {
+            return;
+        }
+        match fs::read_to_string(&path) {
+            Ok(json) => match serde_json::from_str::<PersistedState>(&json) {
+                Ok(state) => {
+                    // If pending_version refers to a branch that no longer
+                    // exists, discard it.
+                    if let Some(ref pv) = state.pending_version {
+                        if !self.has_source(pv) {
+                            tracing::warn!(
+                                version = %pv,
+                                "Persisted pending_version branch no longer exists — discarding"
+                            );
+                            return;
+                        }
+                    }
+                    self.pending_version = state.pending_version;
+                    self.pending_attempt = state.pending_attempt;
+                    self.consecutive_failures = state.consecutive_failures;
+                    self.locked = state.locked;
+                }
+                Err(e) => {
+                    tracing::warn!("Failed to parse version state file: {}", e);
+                }
+            },
+            Err(e) => {
+                tracing::warn!("Failed to read version state file: {}", e);
+            }
+        }
     }
 
     /// Return the deterministic worktree directory for a version.
@@ -478,11 +629,13 @@ impl VersionManager {
                 attempt = attempt,
                 "Reusing pending version for retry"
             );
+            self.persist_state();
             Ok((info, attempt))
         } else {
             let info = self.allocate_version()?;
             self.pending_version = Some(info.version.clone());
             self.pending_attempt = 1;
+            self.persist_state();
             Ok((info, 1))
         }
     }
@@ -496,6 +649,7 @@ impl VersionManager {
             attempt = self.pending_attempt,
             "Version marked as pending (awaiting retry)"
         );
+        self.persist_state();
     }
 
     /// Clear the pending version on success.  Also resets the
@@ -511,6 +665,7 @@ impl VersionManager {
         self.pending_version = None;
         self.pending_attempt = 0;
         self.consecutive_failures = 0;
+        self.persist_state();
     }
 
     /// Create an isolated worktree for the target version branch, copy
@@ -866,8 +1021,10 @@ impl VersionManager {
                 failures = self.consecutive_failures,
                 "Version manager LOCKED — consecutive upgrade failures exceeded threshold"
             );
+            self.persist_state();
             true
         } else {
+            self.persist_state();
             false
         }
     }
@@ -887,6 +1044,7 @@ impl VersionManager {
         if was_locked {
             tracing::info!("Version manager unlocked by admin");
         }
+        self.persist_state();
         was_locked
     }
 

@@ -33,4 +33,21 @@ fn main() {
 
     println!("cargo:rustc-env=RELOOPY_SEED_IPC={}", seed_ipc.display());
     println!("cargo:rerun-if-changed={}", seed_ipc.display());
+
+    // Provide the path to the seed peripheral binary.  At build time
+    // we cannot know the exact target directory, but the release binary
+    // lives alongside the boot binary under the same target prefix.
+    // We use `CARGO_MANIFEST_DIR/../../target/release/reloopy-peripheral`
+    // which is correct for both `cargo build` and `cargo install`.
+    let seed_binary = workspace_root
+        .join("target")
+        .join("release")
+        .join("reloopy-peripheral");
+    // NOTE: We intentionally do NOT canonicalize — the binary may not
+    // exist yet when the boot crate is built (peripheral is a separate
+    // workspace member that may build after boot).
+    println!(
+        "cargo:rustc-env=RELOOPY_SEED_BINARY={}",
+        seed_binary.display()
+    );
 }
