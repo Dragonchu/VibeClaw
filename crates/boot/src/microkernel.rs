@@ -1180,13 +1180,7 @@ impl Microkernel {
                 "Initiating hot swap — killing old peripheral, spawning new"
             );
 
-            // Kill old peripheral first so its port is released.
-            self.kill_peripheral_process().await;
-            router.force_remove_peer("peripheral").await;
-            self.lease_manager.remove("peripheral");
-            self.peripheral_http_port = None;
-
-            match self.spawn_peripheral(&new_binary, new_version).await {
+            match self.replace_peripheral(new_version, router).await {
                 Ok(child) => {
                     self.hot_swap = HotSwapState::WaitingForNewHandshake {
                         new_version: new_version.to_string(),
@@ -1525,6 +1519,29 @@ impl Microkernel {
         self.peripheral_child = None;
     }
 
+    /// Unified peripheral replacement: kill current process, clean up IPC state,
+    /// and spawn the binary at `version_manager.binary_path()`.
+    ///
+    /// Returns the spawned Child.  Caller decides where to store it
+    /// (peripheral_child for direct replacement, HotSwapState for upgrades).
+    async fn replace_peripheral(
+        &mut self,
+        version_label: &str,
+        router: &RouterHandle,
+    ) -> Result<tokio::process::Child, Box<dyn std::error::Error>> {
+        self.kill_peripheral_process().await;
+        router.force_remove_peer("peripheral").await;
+        self.lease_manager.remove("peripheral");
+        self.peripheral_http_port = None;
+
+        let binary = self.version_manager.binary_path().to_path_buf();
+        if !binary.exists() {
+            return Err(format!("Peripheral binary not found: {}", binary.display()).into());
+        }
+
+        self.spawn_peripheral(&binary, version_label).await
+    }
+
     async fn check_hot_swap(&mut self, router: &RouterHandle) {
         match &self.hot_swap {
             HotSwapState::Idle => {}
@@ -1547,23 +1564,20 @@ impl Microkernel {
                     if let HotSwapState::WaitingForNewHandshake { child, .. } = old_state {
                         self.peripheral_child = child;
                     }
-                    self.kill_peripheral_process().await;
 
                     if let Err(e) = self.version_manager.rollback() {
                         tracing::error!("Rollback failed: {}", e);
+                        // Still kill the failed process even if rollback fails
+                        self.kill_peripheral_process().await;
                     } else {
                         tracing::info!(version = %ov, "Rolled back to previous version");
-                        let rollback_binary = self.version_manager.binary_path().to_path_buf();
-
-                        if rollback_binary.exists() {
-                            match self.spawn_peripheral(&rollback_binary, &ov).await {
-                                Ok(child) => {
-                                    self.peripheral_child = Some(child);
-                                    tracing::info!(version = %ov, "Spawned rollback peripheral");
-                                }
-                                Err(e) => {
-                                    tracing::error!("Failed to spawn rollback peripheral: {}", e);
-                                }
+                        match self.replace_peripheral(&ov, router).await {
+                            Ok(child) => {
+                                self.peripheral_child = Some(child);
+                                tracing::info!(version = %ov, "Spawned rollback peripheral");
+                            }
+                            Err(e) => {
+                                tracing::error!("Failed to spawn rollback peripheral: {}", e);
                             }
                         }
                     }
@@ -2105,6 +2119,18 @@ impl Microkernel {
                     serde_json::json!({ "reason": req.reason, "requested_by": from }),
                 )
                 .await;
+
+                // Replace running peripheral with the rolled-back version's binary.
+                match self.replace_peripheral(&v, router).await {
+                    Ok(child) => {
+                        self.peripheral_child = Some(child);
+                        tracing::info!(version = %v, "Peripheral replaced after admin rollback");
+                    }
+                    Err(e) => {
+                        tracing::error!(version = %v, "Failed to replace peripheral after rollback: {}", e);
+                    }
+                }
+
                 messages::AdminForceRollbackResponse {
                     success: true,
                     rolled_back_to: Some(v),
