@@ -14,6 +14,7 @@ use crate::capability::CapabilityManager;
 use crate::constitution::ConstitutionManager;
 use crate::ipc::{RouterActor, RouterHandle};
 use crate::lease::{LeaseConfig, LeaseManager, LeaseStatus};
+use crate::memory_writer;
 use crate::protocol::ProtocolManager;
 use crate::resource::{ResourceLimits, ResourceMonitor, ViolationSeverity};
 use crate::runlevel::{Runlevel, RunlevelManager, TransitionReason};
@@ -181,6 +182,8 @@ pub struct Microkernel {
     /// Peers that have subscribed to event broadcasts (identity → subscribed categories).
     /// Empty category list means all events.
     event_subscribers: std::collections::HashMap<String, Vec<String>>,
+    /// Pending rollback context to send to peripheral after next handshake.
+    pending_rollback_context: Option<messages::RollbackContext>,
 }
 
 impl Microkernel {
@@ -217,6 +220,7 @@ impl Microkernel {
             admin_web_child: None,
             peripheral_http_port: None,
             event_subscribers: std::collections::HashMap::new(),
+            pending_rollback_context: None,
         }
     }
 
@@ -499,6 +503,28 @@ impl Microkernel {
             tracing::warn!(peer = %from, "Failed to send Welcome: {}", e);
         } else {
             tracing::info!(peer = %from, "Handshake complete");
+
+            // Send pending rollback context to peripheral right after Welcome.
+            if from == "peripheral" {
+                if let Some(ctx) = self.pending_rollback_context.take() {
+                    tracing::info!(
+                        from_version = %ctx.from_version,
+                        to_version = %ctx.to_version,
+                        "Sending RollbackContext to peripheral"
+                    );
+                    let ctx_envelope = Envelope {
+                        from: "boot".to_string(),
+                        to: "peripheral".to_string(),
+                        msg_type: msg_types::ROLLBACK_CONTEXT.to_string(),
+                        id: format!("boot-{}", next_event_id()),
+                        payload: to_json_value(&ctx),
+                        fds: Vec::new(),
+                    };
+                    if let Err(e) = router.send_to("peripheral", ctx_envelope).await {
+                        tracing::warn!("Failed to send RollbackContext: {}", e);
+                    }
+                }
+            }
 
             if let Some((new_version, child)) = pending_hot_swap {
                 tracing::info!(
@@ -1196,14 +1222,23 @@ impl Microkernel {
                 }
                 Err(e) => {
                     tracing::error!("Failed to spawn new peripheral: {}", e);
+                    let error_msg = e.to_string();
                     if let Err(re) = self.version_manager.rollback() {
                         tracing::error!("Rollback also failed: {}", re);
+                    } else {
+                        self.record_rollback(
+                            new_version,
+                            &old_version,
+                            "spawn_failure",
+                            Some(&error_msg),
+                            None,
+                        );
                     }
                     self.send_audit(
                         router,
                         "hot_swap_failed",
                         Some(new_version),
-                        serde_json::json!({ "error": e.to_string() }),
+                        serde_json::json!({ "error": error_msg }),
                     )
                     .await;
                 }
@@ -1312,6 +1347,39 @@ impl Microkernel {
         if let Err(e) = router.send_to("audit", envelope).await {
             tracing::debug!("Audit service not available: {} (non-critical)", e);
         }
+    }
+
+    /// Record a rollback event: write to shared memory and set pending context
+    /// so the next peripheral handshake receives structured rollback info.
+    fn record_rollback(
+        &mut self,
+        from_version: &str,
+        to_version: &str,
+        reason: &str,
+        errors: Option<&str>,
+        user_feedback: Option<&str>,
+    ) {
+        // Write to shared memory (best-effort; non-fatal if it fails).
+        let entry = memory_writer::format_rollback_entry(
+            from_version,
+            to_version,
+            reason,
+            errors,
+            user_feedback,
+        );
+        if let Err(e) = memory_writer::append_to_daily_log(&self.config.base_dir, &entry) {
+            tracing::warn!("Failed to write rollback to memory: {}", e);
+        }
+
+        // Prepare RollbackContext to send to peripheral after next handshake.
+        self.pending_rollback_context = Some(messages::RollbackContext {
+            from_version: from_version.to_string(),
+            to_version: to_version.to_string(),
+            reason: reason.to_string(),
+            errors: errors.map(|s| s.to_string()),
+            failed_tests: Vec::new(),
+            user_feedback: user_feedback.map(|s| s.to_string()),
+        });
     }
 
     async fn handle_get_state(&self, envelope: Envelope, router: &RouterHandle) {
@@ -1587,6 +1655,10 @@ impl Microkernel {
                         self.kill_peripheral_process().await;
                     } else {
                         tracing::info!(version = %ov, "Rolled back to previous version");
+
+                        // Write rollback event to shared memory and prepare context.
+                        self.record_rollback(&nv, &ov, "hot_swap_timeout", None, None);
+
                         match self.replace_peripheral(&ov, router).await {
                             Ok(child) => {
                                 self.peripheral_child = Some(child);
@@ -2118,6 +2190,9 @@ impl Microkernel {
 
         tracing::warn!(requested_by = %from, reason = %req.reason, "Admin-initiated rollback");
 
+        let current_version = self.version_manager.current_version()
+            .unwrap_or_else(|| "unknown".to_string());
+
         let result = if let Some(target) = &req.to_version {
             self.version_manager
                 .switch_to(target)
@@ -2135,6 +2210,20 @@ impl Microkernel {
                     serde_json::json!({ "reason": req.reason, "requested_by": from }),
                 )
                 .await;
+
+                // Record rollback in memory and prepare context for the new peripheral.
+                let user_feedback = if req.reason != "AdminWeb-initiated rollback" {
+                    Some(req.reason.as_str())
+                } else {
+                    None
+                };
+                self.record_rollback(
+                    &current_version,
+                    &v,
+                    "user_initiated",
+                    None,
+                    user_feedback,
+                );
 
                 // Replace running peripheral with the rolled-back version's binary.
                 match self.replace_peripheral(&v, router).await {

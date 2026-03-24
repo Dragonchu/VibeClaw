@@ -196,6 +196,7 @@ async fn run(
     });
 
     let (update_result_tx, update_result_rx) = mpsc::channel::<Envelope>(4);
+    let (rollback_ctx_tx, rollback_ctx_rx) = mpsc::channel::<Envelope>(1);
     let shutdown_notify = Arc::new(tokio::sync::Notify::new());
 
     let shutdown_for_ipc = shutdown_notify.clone();
@@ -224,6 +225,10 @@ async fn run(
                 msg_types::UPDATE_ACCEPTED | msg_types::UPDATE_REJECTED => {
                     message_tx.send(envelope).await.warn_err();
                 }
+                msg_types::ROLLBACK_CONTEXT => {
+                    tracing::info!("RollbackContext received from Boot");
+                    rollback_ctx_tx.send(envelope).await.warn_err();
+                }
                 other => {
                     tracing::debug!(msg_type = %other, "Unhandled message");
                 }
@@ -231,7 +236,7 @@ async fn run(
         }
     });
 
-    let agent = Agent::new(llm, source, memory, ipc_tx, update_result_rx);
+    let agent = Agent::new(llm, source, memory, ipc_tx, update_result_rx, rollback_ctx_rx);
 
     let app_state = Arc::new(AppState {
         agent: Mutex::new(agent),

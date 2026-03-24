@@ -199,7 +199,10 @@ async fn main() {
     let source = SourceManager::new(workspace_root);
     let memory = MemoryManager::new(&base_dir);
 
-    let agent = Agent::new(llm, source, memory, ipc_tx, update_result_rx);
+    let agent = Agent::new(llm, source, memory, ipc_tx, update_result_rx, {
+        let (_tx, rx) = mpsc::channel(1);
+        rx
+    });
     let state = Arc::new(Mutex::new(agent));
 
     // ── Run scenario ─────────────────────────────────────────────────────────
@@ -293,7 +296,10 @@ mod tests {
         let llm = ScriptedLlmClient::new(responses);
         let source = SourceManager::new(workspace_root);
         let memory = MemoryManager::new(tmp.path());
-        let mut agent = Agent::new(llm, source, memory, ipc_tx, update_result_rx);
+        let mut agent = Agent::new(llm, source, memory, ipc_tx, update_result_rx, {
+            let (_tx, rx) = mpsc::channel(1);
+            rx
+        });
 
         let (event_tx, mut event_rx) = mpsc::channel::<AgentEvent>(64);
         let handle = tokio::spawn(async move {

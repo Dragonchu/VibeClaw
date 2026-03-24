@@ -29,6 +29,10 @@ const BASE_SYSTEM_PROMPT: &str = r#"You are Reloopy, a self-evolving AI agent wr
 - memory_write(content): Overwrite MEMORY.md with updated long-term facts. Always call memory_get_long_term first to read existing content, then merge and rewrite the full document.
 - memory_append(content): Append a note to today's daily log.
 
+## Version Tools
+- diff_version(base_version, target_version, path?): Show what changed between two version branches (e.g. "V1", "V2"). Returns a unified diff of the peripheral source. Use this after a rollback to understand what the failed version changed.
+- read_version_file(version, path): Read a file from a specific version branch without switching to it. Path is relative to the peripheral crate root.
+
 ## Guidelines
 - Always read the relevant source files before making changes
 - Use search_source and line ranges to keep context focused
@@ -49,6 +53,36 @@ fn build_system_prompt(memory: &MemoryManager) -> String {
     } else {
         format!("{}\n## Current Memory\n\n{}", BASE_SYSTEM_PROMPT, ctx)
     }
+}
+
+fn format_rollback_context(ctx: &reloopy_ipc::messages::RollbackContext) -> String {
+    let mut msg = format!(
+        "## Rollback Notice\n\n\
+         You were rolled back from **{}** to **{}**.\n\n\
+         **Reason:** {}\n",
+        ctx.from_version, ctx.to_version, ctx.reason,
+    );
+
+    if let Some(ref errors) = ctx.errors {
+        msg.push_str(&format!("\n**Error output:**\n```\n{}\n```\n", errors));
+    }
+
+    if !ctx.failed_tests.is_empty() {
+        msg.push_str(&format!(
+            "\n**Failed tests:** {}\n",
+            ctx.failed_tests.join(", ")
+        ));
+    }
+
+    if let Some(ref feedback) = ctx.user_feedback {
+        msg.push_str(&format!("\n**User feedback:** {}\n", feedback));
+    }
+
+    msg.push_str(
+        "\nUse `diff_version` to see what changed in the failed version, then plan your next attempt.\n"
+    );
+
+    msg
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -75,6 +109,8 @@ pub struct Agent<L: LlmClient> {
     conversation: Vec<ChatMessage>,
     ipc_tx: mpsc::Sender<Envelope>,
     update_result_rx: mpsc::Receiver<Envelope>,
+    rollback_ctx_rx: mpsc::Receiver<Envelope>,
+    rollback_context_injected: bool,
 }
 
 impl<L: LlmClient> Agent<L> {
@@ -84,6 +120,7 @@ impl<L: LlmClient> Agent<L> {
         memory: MemoryManager,
         ipc_tx: mpsc::Sender<Envelope>,
         update_result_rx: mpsc::Receiver<Envelope>,
+        rollback_ctx_rx: mpsc::Receiver<Envelope>,
     ) -> Self {
         let system_prompt = build_system_prompt(&memory);
         Self {
@@ -93,6 +130,8 @@ impl<L: LlmClient> Agent<L> {
             conversation: vec![ChatMessage::system(&system_prompt)],
             ipc_tx,
             update_result_rx,
+            rollback_ctx_rx,
+            rollback_context_injected: false,
         }
     }
 
@@ -101,6 +140,25 @@ impl<L: LlmClient> Agent<L> {
         user_input: &str,
         event_tx: mpsc::Sender<AgentEvent>,
     ) -> Result<AgentOutcome, String> {
+        // On first call, check for pending rollback context from Boot.
+        if !self.rollback_context_injected {
+            self.rollback_context_injected = true;
+            if let Ok(envelope) = self.rollback_ctx_rx.try_recv() {
+                if let Ok(ctx) = serde_json::from_value::<
+                    reloopy_ipc::messages::RollbackContext,
+                >(envelope.payload)
+                {
+                    let context_msg = format_rollback_context(&ctx);
+                    self.conversation.push(ChatMessage::system(&context_msg));
+                    tracing::info!(
+                        from = %ctx.from_version,
+                        to = %ctx.to_version,
+                        "Injected rollback context into conversation"
+                    );
+                }
+            }
+        }
+
         self.conversation.push(ChatMessage::user(user_input));
         let tool_defs = tools::tool_definitions();
 

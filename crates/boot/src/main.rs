@@ -2,6 +2,7 @@ mod capability;
 mod constitution;
 mod ipc;
 mod lease;
+mod memory_writer;
 mod microkernel;
 mod protocol;
 mod resource;

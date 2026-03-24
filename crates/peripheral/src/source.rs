@@ -398,6 +398,93 @@ impl SourceManager {
 
         Ok((path, content))
     }
+
+    /// Show the diff between two version branches, scoped to peripheral source.
+    pub fn diff_versions(
+        &self,
+        base_version: &str,
+        target_version: &str,
+        path_filter: Option<&str>,
+    ) -> Result<String, String> {
+        validate_version_name(base_version)?;
+        validate_version_name(target_version)?;
+
+        let mut args = vec![
+            "diff".to_string(),
+            format!("{}..{}", base_version, target_version),
+            "--".to_string(),
+            "crates/peripheral/".to_string(),
+        ];
+
+        if let Some(p) = path_filter {
+            // Ensure path stays within peripheral crate
+            if p.contains("..") {
+                return Err("Path traversal not allowed".to_string());
+            }
+            args[3] = format!("crates/peripheral/{}", p);
+        }
+
+        run_git_command(&self.workspace_root, &args)
+    }
+
+    /// Read a file from a specific version branch without switching to it.
+    pub fn read_version_file(
+        &self,
+        version: &str,
+        relative_path: &str,
+    ) -> Result<String, String> {
+        validate_version_name(version)?;
+
+        if relative_path.contains("..") {
+            return Err("Path traversal not allowed".to_string());
+        }
+
+        let git_path = format!("crates/peripheral/{}", relative_path);
+        let args = vec![
+            "show".to_string(),
+            format!("{}:{}", version, git_path),
+        ];
+
+        run_git_command(&self.workspace_root, &args)
+    }
+}
+
+/// Validate that a version name looks like "V<number>" or "seed" to prevent
+/// git command injection.
+fn validate_version_name(name: &str) -> Result<(), String> {
+    if name == "seed" || name == "HEAD" || name == "main" {
+        return Ok(());
+    }
+    if let Some(stripped) = name.strip_prefix('V') {
+        if !stripped.is_empty() && stripped.chars().all(|c| c.is_ascii_digit()) {
+            return Ok(());
+        }
+    }
+    Err(format!(
+        "Invalid version name '{}'. Expected format: V<number> (e.g. V1, V2).",
+        name
+    ))
+}
+
+/// Run a git command in the given directory and return its stdout.
+fn run_git_command(cwd: &Path, args: &[String]) -> Result<String, String> {
+    let output = std::process::Command::new("git")
+        .args(args)
+        .current_dir(cwd)
+        .output()
+        .map_err(|e| format!("Failed to run git: {}", e))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("git {} failed: {}", args[0], stderr.trim()));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    if stdout.trim().is_empty() {
+        Ok("No differences found.".to_string())
+    } else {
+        Ok(stdout)
+    }
 }
 
 /// Replace an inclusive 1-based line range with new content. Supports appending by

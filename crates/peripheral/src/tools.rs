@@ -264,6 +264,52 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
                 }),
             },
         },
+        ToolDefinition {
+            type_: "function".to_string(),
+            function: FunctionDefinition {
+                name: "diff_version".to_string(),
+                description: "Show what changed between two version branches (e.g. V1..V2). Returns a unified diff scoped to the peripheral crate source. Use this after a rollback to understand what the failed version changed.".to_string(),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "base_version": {
+                            "type": "string",
+                            "description": "Base version branch (e.g. 'V1', 'V2')"
+                        },
+                        "target_version": {
+                            "type": "string",
+                            "description": "Target version branch to compare against (e.g. 'V2', 'V3')"
+                        },
+                        "path": {
+                            "type": "string",
+                            "description": "Optional path filter relative to peripheral crate (e.g. 'src/agent.rs')"
+                        }
+                    },
+                    "required": ["base_version", "target_version"]
+                }),
+            },
+        },
+        ToolDefinition {
+            type_: "function".to_string(),
+            function: FunctionDefinition {
+                name: "read_version_file".to_string(),
+                description: "Read a file from a specific version branch without switching to it. Use this to inspect source code from previous or failed versions.".to_string(),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "version": {
+                            "type": "string",
+                            "description": "Version branch name (e.g. 'V1', 'V2')"
+                        },
+                        "path": {
+                            "type": "string",
+                            "description": "Relative file path within the peripheral crate (e.g. 'src/main.rs')"
+                        }
+                    },
+                    "required": ["version", "path"]
+                }),
+            },
+        },
     ]
 }
 
@@ -450,6 +496,33 @@ pub fn execute_tool(
                     "Appended to today's log ({}).",
                     MemoryManager::today()
                 )),
+                Err(e) => ToolResult::Output(format!("Error: {}", e)),
+            }
+        }
+        "diff_version" => {
+            let base = args["base_version"].as_str().unwrap_or("");
+            let target = args["target_version"].as_str().unwrap_or("");
+            if base.is_empty() || target.is_empty() {
+                return ToolResult::Output(
+                    "Error: 'base_version' and 'target_version' are required.".to_string(),
+                );
+            }
+            let path = args["path"].as_str();
+            match source.diff_versions(base, target, path) {
+                Ok(diff) => ToolResult::Output(diff),
+                Err(e) => ToolResult::Output(format!("Error: {}", e)),
+            }
+        }
+        "read_version_file" => {
+            let version = args["version"].as_str().unwrap_or("");
+            let path = args["path"].as_str().unwrap_or("");
+            if version.is_empty() || path.is_empty() {
+                return ToolResult::Output(
+                    "Error: 'version' and 'path' are required.".to_string(),
+                );
+            }
+            match source.read_version_file(version, path) {
+                Ok(content) => ToolResult::Output(content),
                 Err(e) => ToolResult::Output(format!("Error: {}", e)),
             }
         }

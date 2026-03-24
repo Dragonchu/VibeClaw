@@ -158,6 +158,28 @@ pub struct UpdateAccepted {
     pub version: String,
 }
 
+/// Boot → Peripheral: rollback context sent after Welcome when the current
+/// startup is a rollback recovery.  Gives the agent structured information
+/// about what failed so it can plan the next evolution attempt.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RollbackContext {
+    /// The version that failed (e.g. "V3").
+    pub from_version: String,
+    /// The version that was restored (e.g. "V2").
+    pub to_version: String,
+    /// Machine-readable reason: "hot_swap_timeout", "spawn_failure", "user_initiated".
+    pub reason: String,
+    /// Compilation / test error output (may be truncated).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub errors: Option<String>,
+    /// Names of failed tests, if any.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub failed_tests: Vec<String>,
+    /// Free-form feedback provided by the user at rollback time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user_feedback: Option<String>,
+}
+
 // ---------------------------------------------------------------------------
 // Judge system message types (Phase 3)
 // ---------------------------------------------------------------------------
@@ -571,6 +593,8 @@ pub mod msg_types {
     pub const EVENT_SUBSCRIBE_ACK: &str = "EventSubscribeAck";
     pub const COMPILE_PROGRESS: &str = "CompileProgress";
     pub const TEST_PROGRESS: &str = "TestProgress";
+
+    pub const ROLLBACK_CONTEXT: &str = "RollbackContext";
 }
 
 /// Check if a message type is a core type that Boot should handle itself.
@@ -627,5 +651,6 @@ pub fn is_core_message(msg_type: &str) -> bool {
             | msg_types::EVENT_SUBSCRIBE_ACK
             | msg_types::COMPILE_PROGRESS
             | msg_types::TEST_PROGRESS
+            | msg_types::ROLLBACK_CONTEXT
     )
 }
